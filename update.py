@@ -6,6 +6,7 @@ Run from the repo root: python3 update.py
 Writes biwenger.html next to this script.
 """
 import json
+import os
 import re
 import unicodedata
 import urllib.request
@@ -13,6 +14,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+STARTING_BALANCE = 45_000_000
+DEFAULT_LEAGUE_ID = "709656"
 
 SLUGS = ["alaves","athletic","atletico","barcelona","betis","celta","deportivo","elche",
     "espanyol","getafe","levante","malaga","osasuna","racing","rayo-vallecano","real-madrid",
@@ -36,6 +39,77 @@ def normalize(s):
     stripped = unicodedata.normalize("NFC", stripped).lower()
     stripped = re.sub(r"[^a-z0-9]+", " ", stripped).strip()
     return re.sub(r"\s+", " ", stripped)
+
+
+def fetch_auth(url, token, league_id=None, x_user=None):
+    headers = {"User-Agent": UA, "Authorization": f"Bearer {token}"}
+    if league_id:
+        headers["X-League"] = str(league_id)
+    if x_user:
+        headers["X-User"] = str(x_user)
+    req = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+
+def fetch_league_money(token, league_id, player_names):
+    """Read-only: reconstructs each manager's balance since this season's reset
+    (45M start) from the public transfer feed, since Biwenger hides other
+    managers' live balance when the league's 'balance' privacy setting is on."""
+    acct = fetch_auth("https://biwenger.as.com/api/v2/account", token)
+    league_entry = next((l for l in acct["data"]["leagues"] if str(l["id"]) == str(league_id)), None)
+    if not league_entry:
+        return None, None
+    my_user_id = str(league_entry["user"]["id"])
+
+    league = fetch_auth(f"https://biwenger.as.com/api/v2/league/{league_id}?fields=*,standings,users",
+                         token, league_id, my_user_id)
+    users = {str(u["id"]): u["name"] for u in league["data"]["users"]}
+    balances = {uid: STARTING_BALANCE for uid in users}
+    transfers = []
+
+    offset = 0
+    limit = 20
+    done = False
+    while not done and offset < 400:
+        page = fetch_auth(f"https://biwenger.as.com/api/v2/league/{league_id}/board?offset={offset}&limit={limit}",
+                           token, league_id, my_user_id)
+        items = page["data"]
+        if not items:
+            break
+        for item in items:
+            if item["type"] in ("seasonStarted", "seasonFinished"):
+                done = True
+                break
+            if item["type"] == "market":
+                for c in item.get("content", []):
+                    buyer = c.get("to")
+                    seller = c.get("from")
+                    amount = c.get("amount", 0)
+                    buyer_id = str(buyer["id"]) if buyer else None
+                    seller_id = str(seller["id"]) if seller else None
+                    if buyer_id in balances:
+                        balances[buyer_id] -= amount
+                    if seller_id in balances:
+                        balances[seller_id] += amount
+                    transfers.append([
+                        item["date"], player_names.get(c.get("player"), "?"),
+                        buyer["name"] if buyer else "?", amount,
+                        seller["name"] if seller else None,
+                    ])
+            elif item["type"] == "adminTransfer":
+                for c in item.get("content", []):
+                    frm = c.get("from")
+                    frm_id = str(frm["id"]) if frm else None
+                    if frm_id in balances:
+                        balances[frm_id] += c.get("amount", 0)
+        if done:
+            break
+        offset += limit
+
+    team_rows = sorted(([uid, users[uid], balances[uid]] for uid in users), key=lambda r: -r[2])
+    transfers.sort(key=lambda t: -t[0])
+    return team_rows, transfers
 
 
 def main():
@@ -196,7 +270,26 @@ def main():
     players_json = json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
     print(f"  -> role matches: {role_matches} / injury matches: {inj_matches}")
 
-    print("[5/6] Building HTML...")
+    print("[5/7] Fetching league money (Biwenger, read-only)...")
+    teams_json, transfers_json = "[]", "[]"
+    token = os.environ.get("BIWENGER_TOKEN")
+    if token:
+        league_id = os.environ.get("BIWENGER_LEAGUE_ID", DEFAULT_LEAGUE_ID)
+        player_names = {p["id"]: p["name"] for p in players}
+        try:
+            team_rows, transfers = fetch_league_money(token, league_id, player_names)
+            if team_rows is not None:
+                teams_json = json.dumps(team_rows, ensure_ascii=False, separators=(",", ":"))
+                transfers_json = json.dumps(transfers, ensure_ascii=False, separators=(",", ":"))
+                print(f"  -> {len(team_rows)} managers, {len(transfers)} fichajes esta temporada")
+            else:
+                print("  -> league not found for this token, skipping")
+        except Exception as e:
+            print(f"  -> failed ({e}), skipping league money this run")
+    else:
+        print("  -> BIWENGER_TOKEN not set, skipping league money section")
+
+    print("[6/7] Building HTML...")
     template = (ROOT / "template.html").read_text(encoding="utf-8")
     font600 = (ROOT / "oswald-600.b64").read_text(encoding="utf-8").strip()
     font700 = (ROOT / "oswald-700.b64").read_text(encoding="utf-8").strip()
@@ -204,12 +297,14 @@ def main():
             .replace("__PLAYERS__", players_json)
             .replace("__MARKETCAP__", mc_line)
             .replace("__FONT600__", font600)
-            .replace("__FONT700__", font700))
+            .replace("__FONT700__", font700)
+            .replace("__TEAMS__", teams_json)
+            .replace("__TRANSFERS__", transfers_json))
     out_path = ROOT / "biwenger.html"
     out_path.write_text(html, encoding="utf-8")
     print(f"  -> wrote {out_path} ({out_path.stat().st_size} bytes)")
 
-    print("[6/6] Done. Publish this file as the artifact to update the live dashboard.")
+    print("[7/7] Done. Publish this file as the artifact to update the live dashboard.")
 
 
 if __name__ == "__main__":
