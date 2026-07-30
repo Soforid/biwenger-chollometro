@@ -50,23 +50,24 @@ def normalize(s):
 
 
 def fetch_lineup_probabilities(slugs):
-    """The team's own front page (not /jerarquias) renders a lineup 'campo' widget
-    with a data-probabilidad attribute per player who's in contention for the next
-    matchday (starters + bench alternatives). Keyed by player slug, which is unique
-    site-wide, so no per-team bucketing is needed."""
-    camiseta_re = re.compile(r'<a class="camiseta[^"]*"(?P<attrs>.*?)>', re.S)
+    """The team's own front page (not /jerarquias) has a hidden 'Lista' view
+    (class 'tipo_lista', toggled client-side, but present server-rendered) with
+    one div per squad player carrying data-nombre (their url slug) and
+    data-probabilidad. It covers far more of the squad than the 'Campo' pitch
+    diagram, which only draws the projected starters + a short bench list."""
+    lista_re = re.compile(r'<div class="jugador_\d+ jugador tipo_lista[^"]*"(?P<attrs>.*?)>', re.S)
+    nombre_re = re.compile(r'data-nombre="(?P<slug>[a-z0-9\-]+)"')
     prob_re = re.compile(r'data-probabilidad="(?P<prob>\d+)%"')
-    href_re = re.compile(r'href="https://www\.futbolfantasy\.com/jugadores/(?P<slug>[a-z0-9\-]+)"')
     prob_by_slug = {}
     for slug in slugs:
         html = fetch(f"https://www.futbolfantasy.com/laliga/equipos/{slug}")
         n = 0
-        for m in camiseta_re.finditer(html):
+        for m in lista_re.finditer(html):
             attrs = m.group("attrs")
+            nm = nombre_re.search(attrs)
             p = prob_re.search(attrs)
-            h = href_re.search(attrs)
-            if p and h:
-                prob_by_slug[h.group("slug")] = int(p.group("prob"))
+            if nm and p:
+                prob_by_slug[nm.group("slug")] = int(p.group("prob"))
                 n += 1
         print(f"  -> {slug}: {n} con % de titularidad")
     return prob_by_slug
