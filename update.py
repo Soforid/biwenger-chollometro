@@ -31,10 +31,18 @@ def fetch(url):
         return r.read().decode("utf-8")
 
 
+# Letters with no canonical NFD decomposition (so accent-stripping alone
+# can't fold them) but that still show up in player names, e.g. Sorloth.
+NON_DECOMPOSING = str.maketrans({
+    "ø": "o", "Ø": "O", "đ": "d", "Đ": "D", "ł": "l", "Ł": "L", "ß": "ss",
+})
+
+
 def normalize(s):
     if not s:
         return ""
-    nfd = unicodedata.normalize("NFD", str(s))
+    translated = str(s).translate(NON_DECOMPOSING)
+    nfd = unicodedata.normalize("NFD", translated)
     stripped = "".join(c for c in nfd if unicodedata.category(c) != "Mn")
     stripped = unicodedata.normalize("NFC", stripped).lower()
     stripped = re.sub(r"[^a-z0-9]+", " ", stripped).strip()

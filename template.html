@@ -353,7 +353,12 @@ const ROLE_CLASS = {'Dios':'role-dios','Clave':'role-clave','Importante':'role-i
 
 const euros = n => (n/1e6).toLocaleString('es-ES',{minimumFractionDigits:2,maximumFractionDigits:2})+' M€';
 const eurosShort = n => Math.abs(n)>=1e6 ? (n/1e6).toFixed(2)+'M€' : Math.round(n/1000)+'k€';
-const normalize = s => (s||'').toString().trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'');
+// Letters like o/O with no canonical NFD decomposition (accent-stripping
+// alone can't fold them), but that still show up in player names e.g. Sorloth.
+const NON_DECOMPOSING = {'ø':'o','đ':'d','ł':'l','ß':'ss'};
+const normalize = s => (s||'').toString().trim().toLowerCase()
+  .replace(/[øđłß]/g, c => NON_DECOMPOSING[c])
+  .normalize('NFD').replace(/[̀-ͯ]/g,'');
 
 const data = PLAYERS.map(p=>{
   const [id,name,team,pos,price,inc,ptsLS,status,nextDiff,role,injuryTxt,injuryDays,injuryGrav,injuryStatusTxt,injuryProb]=p;
