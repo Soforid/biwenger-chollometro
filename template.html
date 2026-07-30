@@ -348,6 +348,12 @@ footer{margin-top:40px;padding-top:16px;border-top:1px solid var(--line);color:v
       <select id="teamSel"></select>
       <select id="roleSel"></select>
       <label class="chk-wrap"><input class="chk" type="checkbox" id="onlyOk"> Solo disponibles</label>
+      <label class="chk-wrap" id="onlyLeagueMarketWrap" style="display:none"><input class="chk" type="checkbox" id="onlyLeagueMarket"> Solo en el mercado de mi liga</label>
+      <select id="leagueMarketMode" style="display:none">
+        <option value="all">Todos</option>
+        <option value="free">Libres (máquina)</option>
+        <option value="forsale">No libres (traspasos)</option>
+      </select>
     </div>
     <div class="table-scroll">
       <table>
@@ -366,7 +372,7 @@ footer{margin-top:40px;padding-top:16px;border-top:1px solid var(--line);color:v
 </div>
 
 <script>
-const PLAYERS = __PLAYERS__; // [id,name,team,pos,price,inc,ptsLS,status,nextDiff,role,injuryTxt,injuryDays,injuryGrav,injuryStatusTxt,injuryProb]
+const PLAYERS = __PLAYERS__; // [id,name,team,pos,price,inc,ptsLS,status,nextDiff,role,injuryTxt,injuryDays,injuryGrav,injuryStatusTxt,injuryProb,leagueFree,leagueForSale]
 const MARKETCAP = __MARKETCAP__; // [[yymmdd,value],...]
 const TEAMS = __TEAMS__; // [[userId,name,balance],...] sorted desc by balance
 const TRANSFERS = __TRANSFERS__; // [[dateUnix,playerName,buyerName,amount,sellerNameOrNull],...] sorted desc by date
@@ -388,11 +394,12 @@ const normalize = s => (s||'').toString().trim().toLowerCase()
   .normalize('NFD').replace(/[̀-ͯ]/g,'');
 
 const data = PLAYERS.map(p=>{
-  const [id,name,team,pos,price,inc,ptsLS,status,nextDiff,role,injuryTxt,injuryDays,injuryGrav,injuryStatusTxt,injuryProb]=p;
+  const [id,name,team,pos,price,inc,ptsLS,status,nextDiff,role,injuryTxt,injuryDays,injuryGrav,injuryStatusTxt,injuryProb,leagueFree,leagueForSale]=p;
   const value = (ptsLS!=null && ptsLS>0 && price>0) ? ptsLS/(price/1e6) : null;
-  return {id,name,team,pos,price,inc,ptsLS,status,nextDiff,value,role,injuryTxt,injuryDays,injuryGrav,injuryStatusTxt,injuryProb,
+  return {id,name,team,pos,price,inc,ptsLS,status,nextDiff,value,role,injuryTxt,injuryDays,injuryGrav,injuryStatusTxt,injuryProb,leagueFree,leagueForSale,
     nameNorm: normalize(name), teamNorm: normalize(team)};
 });
+const HAS_LEAGUE_MARKET = data.some(d=>d.leagueFree || d.leagueForSale);
 
 function diffBucket(nd){
   if(nd==null) return {label:'—',cls:'nd-none'};
@@ -588,7 +595,7 @@ function renderMoney(){
 }
 
 /* ---------- Controls + table ---------- */
-const state = {search:'', pos:'all', team:'all', role:'all', onlyOk:false, sortKey:'value', sortDir:-1};
+const state = {search:'', pos:'all', team:'all', role:'all', onlyOk:false, onlyLeagueMarket:false, leagueMarketMode:'all', sortKey:'value', sortDir:-1};
 
 const COLS = [
   {key:'rank', label:'#', sortable:false},
@@ -651,6 +658,11 @@ function filteredSorted(){
     if(state.role==='none' && d.role) return false;
     if(state.role!=='all' && state.role!=='none' && d.role!==state.role) return false;
     if(state.onlyOk && d.status!=='ok') return false;
+    if(state.onlyLeagueMarket){
+      if(!(d.leagueFree || d.leagueForSale)) return false;
+      if(state.leagueMarketMode==='free' && !d.leagueFree) return false;
+      if(state.leagueMarketMode==='forsale' && !d.leagueForSale) return false;
+    }
     if(s && !d.nameNorm.includes(s) && !d.teamNorm.includes(s)) return false;
     return true;
   });
@@ -735,6 +747,17 @@ document.querySelectorAll('.tab-btn').forEach(b=>{
 /* ---------- init ---------- */
 document.getElementById('search').addEventListener('input', e=>{ state.search=e.target.value; renderTable(); });
 document.getElementById('onlyOk').addEventListener('change', e=>{ state.onlyOk=e.target.checked; renderTable(); });
+
+if(HAS_LEAGUE_MARKET){
+  document.getElementById('onlyLeagueMarketWrap').style.display = '';
+  const modeSel = document.getElementById('leagueMarketMode');
+  document.getElementById('onlyLeagueMarket').addEventListener('change', e=>{
+    state.onlyLeagueMarket = e.target.checked;
+    modeSel.style.display = e.target.checked ? '' : 'none';
+    renderTable();
+  });
+  modeSel.addEventListener('change', e=>{ state.leagueMarketMode = e.target.value; renderTable(); });
+}
 
 renderKPIs();
 renderSpark();

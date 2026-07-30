@@ -91,7 +91,7 @@ def fetch_league_money(token, league_id, player_names):
     acct = fetch_auth("https://biwenger.as.com/api/v2/account", token)
     league_entry = next((l for l in acct["data"]["leagues"] if str(l["id"]) == str(league_id)), None)
     if not league_entry:
-        return None, None
+        return None, None, None, None
     my_user_id = str(league_entry["user"]["id"])
 
     league = fetch_auth(f"https://biwenger.as.com/api/v2/league/{league_id}?fields=*,standings,users",
@@ -175,11 +175,30 @@ def fetch_league_money(token, league_id, player_names):
 
     team_rows = sorted(([uid, users[uid], balances[uid]] for uid in users), key=lambda r: -r[2])
     transfers.sort(key=lambda t: -t[0])
-    return team_rows, transfers
+
+    print("  -> Fetching current rosters (who owns which player)...")
+    owner_by_player = {}
+    for uid, uname in users.items():
+        roster = fetch_auth(f"https://biwenger.as.com/api/v2/user/{uid}?fields=*,players",
+                             token, league_id, my_user_id)
+        for p in roster["data"].get("players") or []:
+            owner_by_player[p["id"]] = uname
+
+    print("  -> Fetching current league market (peer listings)...")
+    market_resp = fetch_auth("https://biwenger.as.com/api/v2/user?fields=*,market(*)",
+                              token, league_id, my_user_id)
+    forsale_player_ids = set()
+    for item in market_resp["data"].get("market") or []:
+        pid = (item.get("player") or {}).get("id") if isinstance(item.get("player"), dict) else item.get("player")
+        if pid is not None:
+            forsale_player_ids.add(pid)
+    print(f"  -> {len(owner_by_player)} jugadores en plantillas, {len(forsale_player_ids)} en traspaso")
+
+    return team_rows, transfers, owner_by_player, forsale_player_ids
 
 
 def main():
-    print("[1/8] Fetching Biwenger data...")
+    print("[1/9] Fetching Biwenger data...")
     biw_data = json.loads(fetch("https://cf.biwenger.com/api/v2/competitions/la-liga/data?lang=es&score=1"))["data"]
     biw_market = json.loads(fetch("https://cf.biwenger.com/api/v2/competitions/la-liga/market?interval=day&includeValues=true"))["data"]
 
@@ -206,7 +225,7 @@ def main():
     mc_line = json.dumps(vals, separators=(",", ":"))
     print(f"  -> {len(players)} players")
 
-    print("[2/8] Fetching FutbolFantasy team hierarchies (20 teams)...")
+    print("[2/9] Fetching FutbolFantasy team hierarchies (20 teams)...")
     header_re = re.compile(
         r'<img width="30" class="mr-2" src="https://static\.futbolfantasy\.com/uploads/images/(?P<img>[a-z0-9]+)\.png">\s*(?P<cat>[^<]+?)\s*</header>',
         re.S)
@@ -238,11 +257,11 @@ def main():
         roles_by_team[slug] = lst
         print(f"  -> {slug}: {len(lst)} players")
 
-    print("[3/8] Fetching starting-XI probabilities (team pages)...")
+    print("[3/9] Fetching starting-XI probabilities (team pages)...")
     prob_by_slug = fetch_lineup_probabilities(SLUGS)
     print(f"  -> {len(prob_by_slug)} players with a published probability")
 
-    print("[4/8] Fetching FutbolFantasy injuries...")
+    print("[4/9] Fetching FutbolFantasy injuries...")
     inj_html = fetch("https://www.futbolfantasy.com/laliga/lesionados")
     parts = re.split(r'<div class="elemento lesionado col-12">', inj_html)
     name_re = re.compile(r'href="https://www\.futbolfantasy\.com/jugadores/[a-z0-9\-]+" class="jugador">(?P<name>[^<]+?)</a>', re.S)
@@ -273,7 +292,7 @@ def main():
         }
     print(f"  -> {len(inj_by_norm)} injury/doubt entries")
 
-    print("[5/8] Matching FutbolFantasy data to Biwenger players...")
+    print("[5/9] Matching FutbolFantasy data to Biwenger players...")
 
     def team_slug(team):
         n = normalize(team)
@@ -313,6 +332,29 @@ def main():
         found = [v for k, v in inj_by_norm.items() if k.split(" ")[-1] == bw_last]
         return found[0] if len(found) == 1 else None
 
+    print("[6/9] Fetching league money and market (Biwenger, read-only)...")
+    teams_json, transfers_json = "[]", "[]"
+    owner_by_player, forsale_player_ids = {}, set()
+    token = os.environ.get("BIWENGER_TOKEN")
+    if token:
+        league_id = os.environ.get("BIWENGER_LEAGUE_ID", DEFAULT_LEAGUE_ID)
+        player_names = {p["id"]: p["name"] for p in players}
+        try:
+            team_rows, transfers, owner_by_player, forsale_player_ids = fetch_league_money(token, league_id, player_names)
+            if team_rows is not None:
+                teams_json = json.dumps(team_rows, ensure_ascii=False, separators=(",", ":"))
+                transfers_json = json.dumps(transfers, ensure_ascii=False, separators=(",", ":"))
+                print(f"  -> {len(team_rows)} managers, {len(transfers)} fichajes esta temporada")
+            else:
+                print("  -> league not found for this token, skipping")
+                owner_by_player, forsale_player_ids = {}, set()
+        except Exception as e:
+            print(f"  -> failed ({e}), skipping league money/market this run")
+            owner_by_player, forsale_player_ids = {}, set()
+    else:
+        print("  -> BIWENGER_TOKEN not set, skipping league money/market section")
+
+    print("[7/9] Building player rows...")
     role_matches = 0
     inj_matches = 0
     lineup_prob_matches = 0
@@ -341,33 +383,18 @@ def main():
             if lineup_prob is not None:
                 prob_v = lineup_prob
                 lineup_prob_matches += 1
+        league_owner = owner_by_player.get(p["id"])
+        league_free = bool(owner_by_player) and league_owner is None
+        league_forsale = p["id"] in forsale_player_ids
         rows.append([
             p["id"], p["name"], p["team"], p["pos"], p["price"], p["inc"], p["ptsLS"], p["status"],
             p["nextDiff"], role, injury_txt, days_txt, grav_v, status_txt, prob_v,
+            league_free, league_forsale,
         ])
     players_json = json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
     print(f"  -> role matches: {role_matches} / injury matches: {inj_matches} / lineup probability matches: {lineup_prob_matches}")
 
-    print("[6/8] Fetching league money (Biwenger, read-only)...")
-    teams_json, transfers_json = "[]", "[]"
-    token = os.environ.get("BIWENGER_TOKEN")
-    if token:
-        league_id = os.environ.get("BIWENGER_LEAGUE_ID", DEFAULT_LEAGUE_ID)
-        player_names = {p["id"]: p["name"] for p in players}
-        try:
-            team_rows, transfers = fetch_league_money(token, league_id, player_names)
-            if team_rows is not None:
-                teams_json = json.dumps(team_rows, ensure_ascii=False, separators=(",", ":"))
-                transfers_json = json.dumps(transfers, ensure_ascii=False, separators=(",", ":"))
-                print(f"  -> {len(team_rows)} managers, {len(transfers)} fichajes esta temporada")
-            else:
-                print("  -> league not found for this token, skipping")
-        except Exception as e:
-            print(f"  -> failed ({e}), skipping league money this run")
-    else:
-        print("  -> BIWENGER_TOKEN not set, skipping league money section")
-
-    print("[7/8] Building HTML...")
+    print("[8/9] Building HTML...")
     template = (ROOT / "template.html").read_text(encoding="utf-8")
     font600 = (ROOT / "oswald-600.b64").read_text(encoding="utf-8").strip()
     font700 = (ROOT / "oswald-700.b64").read_text(encoding="utf-8").strip()
@@ -382,7 +409,7 @@ def main():
     out_path.write_text(html, encoding="utf-8")
     print(f"  -> wrote {out_path} ({out_path.stat().st_size} bytes)")
 
-    print("[8/8] Done. Publish this file as the artifact to update the live dashboard.")
+    print("[9/9] Done. Publish this file as the artifact to update the live dashboard.")
 
 
 if __name__ == "__main__":
