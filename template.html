@@ -302,7 +302,7 @@ footer{margin-top:40px;padding-top:16px;border-top:1px solid var(--line);color:v
 
   <div class="section-head" id="moneyHead" style="display:none">
     <h2>Dinero de la liga</h2>
-    <span class="hint">Saldo reconstruido desde los 45 M€ de salida + historial de fichajes de tu liga privada</span>
+    <span class="hint">Saldo reconstruido desde los 50 M€ de salida + historial de fichajes, ventas, canjes y ajustes del admin de tu liga privada</span>
   </div>
   <div id="moneySection" style="display:none">
     <div class="teams-grid" id="teamsGrid"></div>
@@ -529,7 +529,7 @@ function renderMoney(){
 
   const grid = document.getElementById('teamsGrid');
   grid.innerHTML = TEAMS.map(([id,name,balance],i)=>{
-    const delta = balance - 45000000;
+    const delta = balance - 50000000;
     const cls = delta>0?'up':delta<0?'down':'flat';
     const arrow = delta>0?'▲':delta<0?'▼':'—';
     return `<div class="team-card">

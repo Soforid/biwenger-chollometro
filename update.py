@@ -14,7 +14,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
-STARTING_BALANCE = 45_000_000
+STARTING_BALANCE = 50_000_000
 DEFAULT_LEAGUE_ID = "709656"
 
 SLUGS = ["alaves","athletic","atletico","barcelona","betis","celta","deportivo","elche",
@@ -99,6 +99,11 @@ def fetch_league_money(token, league_id, player_names):
     users = {str(u["id"]): u["name"] for u in league["data"]["users"]}
     balances = {uid: STARTING_BALANCE for uid in users}
     transfers = []
+    HANDLED_TYPES = {"market", "adminTransfer", "transfer", "bonus",
+                      "seasonStarted", "seasonFinished",
+                      "adminText", "playerMovements", "leagueSettings",
+                      "leaguePremium", "ultra", "userLeave", "userName"}
+    unhandled_types = set()
 
     offset = 0
     limit = 20
@@ -110,6 +115,8 @@ def fetch_league_money(token, league_id, player_names):
         if not items:
             break
         for item in items:
+            if item["type"] not in HANDLED_TYPES:
+                unhandled_types.add(item["type"])
             if item["type"] in ("seasonStarted", "seasonFinished"):
                 done = True
                 break
@@ -135,9 +142,36 @@ def fetch_league_money(token, league_id, player_names):
                     frm_id = str(frm["id"]) if frm else None
                     if frm_id in balances:
                         balances[frm_id] += c.get("amount", 0)
+            elif item["type"] == "transfer":
+                # Sale, either to the market ("machine" - only 'from') or
+                # directly to another manager (both 'from' and 'to').
+                for c in item.get("content", []):
+                    seller = c.get("from")
+                    buyer = c.get("to")
+                    amount = c.get("amount", 0)
+                    seller_id = str(seller["id"]) if seller else None
+                    buyer_id = str(buyer["id"]) if buyer else None
+                    if seller_id in balances:
+                        balances[seller_id] += amount
+                    if buyer_id in balances:
+                        balances[buyer_id] -= amount
+                    transfers.append([
+                        item["date"], player_names.get(c.get("player"), "?"),
+                        buyer["name"] if buyer else "Máquina", amount,
+                        seller["name"] if seller else None,
+                    ])
+            elif item["type"] == "bonus":
+                for c in item.get("content", []):
+                    user = c.get("user")
+                    uid = str(user["id"]) if user else None
+                    if uid in balances:
+                        balances[uid] += c.get("amount", 0)
         if done:
             break
         offset += limit
+
+    if unhandled_types:
+        print(f"  -> WARNING: unhandled board event types (money not accounted for): {sorted(unhandled_types)}")
 
     team_rows = sorted(([uid, users[uid], balances[uid]] for uid in users), key=lambda r: -r[2])
     transfers.sort(key=lambda t: -t[0])
