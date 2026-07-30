@@ -87,11 +87,15 @@ def fetch_auth(url, token, league_id=None, x_user=None):
 def fetch_league_money(token, league_id, player_names):
     """Read-only: reconstructs each manager's balance since this season's reset
     (45M start) from the public transfer feed, since Biwenger hides other
-    managers' live balance when the league's 'balance' privacy setting is on."""
+    managers' live balance when the league's 'balance' privacy setting is on.
+    Also collects each manager's roster and their bidding history (wins and
+    losing bids), and today's live market listing, for the rival-scouting and
+    buy-recommendation features. Returns a dict, or None if the league/token
+    combination doesn't resolve to a real league."""
     acct = fetch_auth("https://biwenger.as.com/api/v2/account", token)
     league_entry = next((l for l in acct["data"]["leagues"] if str(l["id"]) == str(league_id)), None)
     if not league_entry:
-        return None, None, None, None
+        return None
     my_user_id = str(league_entry["user"]["id"])
 
     league = fetch_auth(f"https://biwenger.as.com/api/v2/league/{league_id}?fields=*,standings,users",
@@ -99,6 +103,11 @@ def fetch_league_money(token, league_id, player_names):
     users = {str(u["id"]): u["name"] for u in league["data"]["users"]}
     balances = {uid: STARTING_BALANCE for uid in users}
     transfers = []
+    # wins: listings this manager won. losses: losing bids they placed (from
+    # the 'bids' array of listings someone else won) - both are a proxy for
+    # how active/aggressive a manager is in the market.
+    bid_stats = {uid: {"wins": 0, "losses": 0, "lastLossAmount": []} for uid in users}
+    overpay_ratios = []  # winning_amount / highest_losing_bid, for listings with competing bids
     HANDLED_TYPES = {"market", "adminTransfer", "transfer", "bonus",
                       "seasonStarted", "seasonFinished",
                       "adminText", "playerMovements", "leagueSettings",
@@ -131,6 +140,18 @@ def fetch_league_money(token, league_id, player_names):
                         balances[buyer_id] -= amount
                     if seller_id in balances:
                         balances[seller_id] += amount
+                    if buyer_id in bid_stats:
+                        bid_stats[buyer_id]["wins"] += 1
+                    bids = c.get("bids", [])
+                    for b in bids:
+                        bidder = str((b.get("user") or {}).get("id") or "")
+                        if bidder in bid_stats:
+                            bid_stats[bidder]["losses"] += 1
+                            bid_stats[bidder]["lastLossAmount"].append(b.get("amount", 0))
+                    if bids and amount > 0:
+                        top_losing_bid = max(b.get("amount", 0) for b in bids)
+                        if top_losing_bid > 0:
+                            overpay_ratios.append(amount / top_losing_bid)
                     transfers.append([
                         item["date"], player_names.get(c.get("player"), "?"),
                         buyer["name"] if buyer else "?", amount,
@@ -176,6 +197,14 @@ def fetch_league_money(token, league_id, player_names):
     team_rows = sorted(([uid, users[uid], balances[uid]] for uid in users), key=lambda r: -r[2])
     transfers.sort(key=lambda t: -t[0])
 
+    overpay_ratios.sort()
+    if overpay_ratios:
+        median_overpay = overpay_ratios[len(overpay_ratios) // 2]
+        print(f"  -> {len(overpay_ratios)} pujas competidas, sobreprecio típico del ganador: +{(median_overpay-1)*100:.0f}%")
+    else:
+        median_overpay = 1.10  # not enough competitive-bid history yet this season - conservative default
+        print("  -> sin histórico suficiente de pujas competidas, uso margen por defecto (+10%)")
+
     # The league's actual daily market listing: the system auto-adds ~20 free
     # ("Lliure", user is null) players per day, plus whatever other managers
     # have explicitly put up for sale (user is their manager info). This is
@@ -183,20 +212,33 @@ def fetch_league_money(token, league_id, player_names):
     # is actually purchasable right now.
     print("  -> Fetching today's league market listing...")
     market_resp = fetch_auth("https://biwenger.as.com/api/v2/market", token, league_id, my_user_id)
-    market_free_ids = set()
-    market_forsale = {}
+    market = {}
     for sale in market_resp["data"].get("sales") or []:
         pid = (sale.get("player") or {}).get("id")
         if pid is None:
             continue
         user = sale.get("user")
-        if user:
-            market_forsale[pid] = {"seller": user.get("name"), "price": sale.get("price"), "until": sale.get("until")}
-        else:
-            market_free_ids.add(pid)
-    print(f"  -> {len(market_free_ids)} libres (máquina), {len(market_forsale)} en venta por managers")
+        market[pid] = {
+            "free": user is None,
+            "seller": user.get("name") if user else None,
+            "price": sale.get("price"),
+            "until": sale.get("until"),
+        }
+    n_free = sum(1 for m in market.values() if m["free"])
+    print(f"  -> {n_free} libres (máquina), {len(market) - n_free} en venta por managers")
 
-    return team_rows, transfers, market_free_ids, market_forsale
+    print("  -> Fetching current rosters (for rival squad composition)...")
+    rosters = {}
+    for uid in users:
+        roster = fetch_auth(f"https://biwenger.as.com/api/v2/user/{uid}?fields=*,players",
+                             token, league_id, my_user_id)
+        rosters[uid] = [p["id"] for p in (roster["data"].get("players") or [])]
+
+    return {
+        "team_rows": team_rows, "transfers": transfers, "market": market,
+        "bid_stats": bid_stats, "rosters": rosters, "users": users,
+        "median_overpay": median_overpay,
+    }
 
 
 def main():
@@ -334,27 +376,57 @@ def main():
         found = [v for k, v in inj_by_norm.items() if k.split(" ")[-1] == bw_last]
         return found[0] if len(found) == 1 else None
 
-    print("[6/9] Fetching league money and market (Biwenger, read-only)...")
-    teams_json, transfers_json = "[]", "[]"
-    market_free_ids, market_forsale = set(), {}
+    print("[6/9] Fetching league money, market and rivals (Biwenger, read-only)...")
+    teams_json, transfers_json, rivals_json = "[]", "[]", "[]"
+    market = {}
+    median_overpay = 1.10
     token = os.environ.get("BIWENGER_TOKEN")
     if token:
         league_id = os.environ.get("BIWENGER_LEAGUE_ID", DEFAULT_LEAGUE_ID)
         player_names = {p["id"]: p["name"] for p in players}
+        pos_by_id = {p["id"]: p["pos"] for p in players}
+        players_by_id = {p["id"]: p for p in players}
         try:
-            team_rows, transfers, market_free_ids, market_forsale = fetch_league_money(token, league_id, player_names)
-            if team_rows is not None:
-                teams_json = json.dumps(team_rows, ensure_ascii=False, separators=(",", ":"))
-                transfers_json = json.dumps(transfers, ensure_ascii=False, separators=(",", ":"))
-                print(f"  -> {len(team_rows)} managers, {len(transfers)} fichajes esta temporada")
+            league_data = fetch_league_money(token, league_id, player_names)
+            if league_data is not None:
+                teams_json = json.dumps(league_data["team_rows"], ensure_ascii=False, separators=(",", ":"))
+                transfers_json = json.dumps(league_data["transfers"], ensure_ascii=False, separators=(",", ":"))
+                market = league_data["market"]
+                median_overpay = league_data["median_overpay"]
+                print(f"  -> {len(league_data['team_rows'])} managers, {len(league_data['transfers'])} fichajes esta temporada")
+
+                # Any owned player can be instant-sold to the market ("machine")
+                # for roughly its current value at any time, so a manager who
+                # looks broke right now may not be for long - and specifically,
+                # anyone with a listing already up for sale (in `market`) will
+                # get that cash the moment it sells (today, at the listed price).
+                pending_by_seller = {}
+                for listing in market.values():
+                    if not listing["free"] and listing["seller"]:
+                        pending_by_seller[listing["seller"]] = pending_by_seller.get(listing["seller"], 0) + (listing["price"] or 0)
+
+                rivals = []
+                for uid, name in league_data["users"].items():
+                    balance = next((b for u, n, b in league_data["team_rows"] if u == uid), 0)
+                    pos_counts = [0, 0, 0, 0, 0]  # POR,DEF,CEN,DEL,ENT
+                    roster_value = 0
+                    for pid in league_data["rosters"].get(uid, []):
+                        pos = pos_by_id.get(pid)
+                        if pos and 1 <= pos <= 5:
+                            pos_counts[pos - 1] += 1
+                        roster_value += players_by_id.get(pid, {}).get("price", 0) or 0
+                    stats = league_data["bid_stats"].get(uid, {"wins": 0, "losses": 0})
+                    pending = pending_by_seller.get(name, 0)
+                    rivals.append([uid, name, balance, pending, roster_value,
+                                    *pos_counts, sum(pos_counts), stats["wins"], stats["losses"]])
+                rivals.sort(key=lambda r: -r[2])
+                rivals_json = json.dumps(rivals, ensure_ascii=False, separators=(",", ":"))
             else:
                 print("  -> league not found for this token, skipping")
-                market_free_ids, market_forsale = set(), {}
         except Exception as e:
-            print(f"  -> failed ({e}), skipping league money/market this run")
-            market_free_ids, market_forsale = set(), {}
+            print(f"  -> failed ({e}), skipping league money/market/rivals this run")
     else:
-        print("  -> BIWENGER_TOKEN not set, skipping league money/market section")
+        print("  -> BIWENGER_TOKEN not set, skipping league money/market/rivals section")
 
     print("[7/9] Building player rows...")
     role_matches = 0
@@ -385,12 +457,12 @@ def main():
             if lineup_prob is not None:
                 prob_v = lineup_prob
                 lineup_prob_matches += 1
-        league_free = p["id"] in market_free_ids
-        sale = market_forsale.get(p["id"])
-        league_forsale = sale is not None
-        sale_price = sale["price"] if sale else None
-        sale_seller = sale["seller"] if sale else None
-        sale_until = sale["until"] if sale else None
+        listing = market.get(p["id"])
+        league_free = bool(listing) and listing["free"]
+        league_forsale = bool(listing) and not listing["free"]
+        sale_price = listing["price"] if listing else None
+        sale_seller = listing["seller"] if listing else None
+        sale_until = listing["until"] if listing else None
         rows.append([
             p["id"], p["name"], p["team"], p["pos"], p["price"], p["inc"], p["ptsLS"], p["status"],
             p["nextDiff"], role, injury_txt, days_txt, grav_v, status_txt, prob_v,
@@ -409,7 +481,9 @@ def main():
             .replace("__FONT600__", font600)
             .replace("__FONT700__", font700)
             .replace("__TEAMS__", teams_json)
-            .replace("__TRANSFERS__", transfers_json))
+            .replace("__TRANSFERS__", transfers_json)
+            .replace("__RIVALS__", rivals_json)
+            .replace("__MEDIAN_OVERPAY__", json.dumps(median_overpay)))
     out_path = ROOT / "biwenger.html"
     out_path.write_text(html, encoding="utf-8")
     print(f"  -> wrote {out_path} ({out_path.stat().st_size} bytes)")
