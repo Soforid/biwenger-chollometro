@@ -247,6 +247,9 @@ tbody tr:hover{background:var(--surface-2);}
 .prob-chip.prob-high{color:var(--rise);}
 .prob-chip.prob-mid{color:var(--accent);}
 .prob-chip.prob-low{color:var(--fall);}
+.market-badge{display:inline-block;font-size:9.5px;font-weight:700;letter-spacing:.02em;text-transform:uppercase;padding:1px 6px;border-radius:20px;margin-left:6px;vertical-align:middle;cursor:default;}
+.market-badge.market-free{background:var(--rise-bg);color:var(--rise);}
+.market-badge.market-forsale{background:color-mix(in srgb, var(--accent) 20%, transparent);color:var(--accent);}
 .role-chip{font-size:11px;padding:2px 8px;border-radius:20px;font-weight:600;white-space:nowrap;}
 .role-dios{background:linear-gradient(90deg,#caa028,#e8c766);color:#241a00;}
 .role-clave{background:var(--rise-bg);color:var(--rise);}
@@ -372,7 +375,7 @@ footer{margin-top:40px;padding-top:16px;border-top:1px solid var(--line);color:v
 </div>
 
 <script>
-const PLAYERS = __PLAYERS__; // [id,name,team,pos,price,inc,ptsLS,status,nextDiff,role,injuryTxt,injuryDays,injuryGrav,injuryStatusTxt,injuryProb,leagueFree,leagueForSale]
+const PLAYERS = __PLAYERS__; // [id,name,team,pos,price,inc,ptsLS,status,nextDiff,role,injuryTxt,injuryDays,injuryGrav,injuryStatusTxt,injuryProb,leagueFree,leagueForSale,salePrice,saleSeller,saleUntil]
 const MARKETCAP = __MARKETCAP__; // [[yymmdd,value],...]
 const TEAMS = __TEAMS__; // [[userId,name,balance],...] sorted desc by balance
 const TRANSFERS = __TRANSFERS__; // [[dateUnix,playerName,buyerName,amount,sellerNameOrNull],...] sorted desc by date
@@ -394,9 +397,9 @@ const normalize = s => (s||'').toString().trim().toLowerCase()
   .normalize('NFD').replace(/[̀-ͯ]/g,'');
 
 const data = PLAYERS.map(p=>{
-  const [id,name,team,pos,price,inc,ptsLS,status,nextDiff,role,injuryTxt,injuryDays,injuryGrav,injuryStatusTxt,injuryProb,leagueFree,leagueForSale]=p;
+  const [id,name,team,pos,price,inc,ptsLS,status,nextDiff,role,injuryTxt,injuryDays,injuryGrav,injuryStatusTxt,injuryProb,leagueFree,leagueForSale,salePrice,saleSeller,saleUntil]=p;
   const value = (ptsLS!=null && ptsLS>0 && price>0) ? ptsLS/(price/1e6) : null;
-  return {id,name,team,pos,price,inc,ptsLS,status,nextDiff,value,role,injuryTxt,injuryDays,injuryGrav,injuryStatusTxt,injuryProb,leagueFree,leagueForSale,
+  return {id,name,team,pos,price,inc,ptsLS,status,nextDiff,value,role,injuryTxt,injuryDays,injuryGrav,injuryStatusTxt,injuryProb,leagueFree,leagueForSale,salePrice,saleSeller,saleUntil,
     nameNorm: normalize(name), teamNorm: normalize(team)};
 });
 const HAS_LEAGUE_MARKET = data.some(d=>d.leagueFree || d.leagueForSale);
@@ -718,9 +721,17 @@ function renderTable(){
       probHtml = `<span class="role-none" title="FutbolFantasy aún no ha publicado la alineación probable de esta jornada">—</span>`;
     }
 
+    let marketBadge = '';
+    if(d.leagueFree){
+      marketBadge = `<span class="market-badge market-free" title="Disponible ahora mismo en el mercado de tu liga (ficha libre de la máquina)">Mercado</span>`;
+    } else if(d.leagueForSale){
+      const untilTxt = d.saleUntil ? new Date(d.saleUntil*1000).toLocaleString('es-ES',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : '?';
+      marketBadge = `<span class="market-badge market-forsale" title="En venta por ${d.saleSeller||'?'} · ${euros(d.salePrice||0)} · finaliza ${untilTxt}">En venta</span>`;
+    }
+
     return `<tr>
       <td class="tab" style="color:var(--ink-dim)">${i+1}</td>
-      <td><div class="pname">${d.name}</div><div class="pteam">${d.team}</div></td>
+      <td><div class="pname">${d.name}${marketBadge}</div><div class="pteam">${d.team}</div></td>
       <td><span class="pos-chip pos-${d.pos}">${POS_LABEL[d.pos]}</span></td>
       <td>${roleHtml}</td>
       <td class="tab">${euros(d.price)}</td>

@@ -176,25 +176,27 @@ def fetch_league_money(token, league_id, player_names):
     team_rows = sorted(([uid, users[uid], balances[uid]] for uid in users), key=lambda r: -r[2])
     transfers.sort(key=lambda t: -t[0])
 
-    print("  -> Fetching current rosters (who owns which player)...")
-    owner_by_player = {}
-    for uid, uname in users.items():
-        roster = fetch_auth(f"https://biwenger.as.com/api/v2/user/{uid}?fields=*,players",
-                             token, league_id, my_user_id)
-        for p in roster["data"].get("players") or []:
-            owner_by_player[p["id"]] = uname
+    # The league's actual daily market listing: the system auto-adds ~20 free
+    # ("Lliure", user is null) players per day, plus whatever other managers
+    # have explicitly put up for sale (user is their manager info). This is
+    # NOT "every unowned La Liga player" - only this specific rotating batch
+    # is actually purchasable right now.
+    print("  -> Fetching today's league market listing...")
+    market_resp = fetch_auth("https://biwenger.as.com/api/v2/market", token, league_id, my_user_id)
+    market_free_ids = set()
+    market_forsale = {}
+    for sale in market_resp["data"].get("sales") or []:
+        pid = (sale.get("player") or {}).get("id")
+        if pid is None:
+            continue
+        user = sale.get("user")
+        if user:
+            market_forsale[pid] = {"seller": user.get("name"), "price": sale.get("price"), "until": sale.get("until")}
+        else:
+            market_free_ids.add(pid)
+    print(f"  -> {len(market_free_ids)} libres (máquina), {len(market_forsale)} en venta por managers")
 
-    print("  -> Fetching current league market (peer listings)...")
-    market_resp = fetch_auth("https://biwenger.as.com/api/v2/user?fields=*,market(*)",
-                              token, league_id, my_user_id)
-    forsale_player_ids = set()
-    for item in market_resp["data"].get("market") or []:
-        pid = (item.get("player") or {}).get("id") if isinstance(item.get("player"), dict) else item.get("player")
-        if pid is not None:
-            forsale_player_ids.add(pid)
-    print(f"  -> {len(owner_by_player)} jugadores en plantillas, {len(forsale_player_ids)} en traspaso")
-
-    return team_rows, transfers, owner_by_player, forsale_player_ids
+    return team_rows, transfers, market_free_ids, market_forsale
 
 
 def main():
@@ -334,23 +336,23 @@ def main():
 
     print("[6/9] Fetching league money and market (Biwenger, read-only)...")
     teams_json, transfers_json = "[]", "[]"
-    owner_by_player, forsale_player_ids = {}, set()
+    market_free_ids, market_forsale = set(), {}
     token = os.environ.get("BIWENGER_TOKEN")
     if token:
         league_id = os.environ.get("BIWENGER_LEAGUE_ID", DEFAULT_LEAGUE_ID)
         player_names = {p["id"]: p["name"] for p in players}
         try:
-            team_rows, transfers, owner_by_player, forsale_player_ids = fetch_league_money(token, league_id, player_names)
+            team_rows, transfers, market_free_ids, market_forsale = fetch_league_money(token, league_id, player_names)
             if team_rows is not None:
                 teams_json = json.dumps(team_rows, ensure_ascii=False, separators=(",", ":"))
                 transfers_json = json.dumps(transfers, ensure_ascii=False, separators=(",", ":"))
                 print(f"  -> {len(team_rows)} managers, {len(transfers)} fichajes esta temporada")
             else:
                 print("  -> league not found for this token, skipping")
-                owner_by_player, forsale_player_ids = {}, set()
+                market_free_ids, market_forsale = set(), {}
         except Exception as e:
             print(f"  -> failed ({e}), skipping league money/market this run")
-            owner_by_player, forsale_player_ids = {}, set()
+            market_free_ids, market_forsale = set(), {}
     else:
         print("  -> BIWENGER_TOKEN not set, skipping league money/market section")
 
@@ -383,13 +385,16 @@ def main():
             if lineup_prob is not None:
                 prob_v = lineup_prob
                 lineup_prob_matches += 1
-        league_owner = owner_by_player.get(p["id"])
-        league_free = bool(owner_by_player) and league_owner is None
-        league_forsale = p["id"] in forsale_player_ids
+        league_free = p["id"] in market_free_ids
+        sale = market_forsale.get(p["id"])
+        league_forsale = sale is not None
+        sale_price = sale["price"] if sale else None
+        sale_seller = sale["seller"] if sale else None
+        sale_until = sale["until"] if sale else None
         rows.append([
             p["id"], p["name"], p["team"], p["pos"], p["price"], p["inc"], p["ptsLS"], p["status"],
             p["nextDiff"], role, injury_txt, days_txt, grav_v, status_txt, prob_v,
-            league_free, league_forsale,
+            league_free, league_forsale, sale_price, sale_seller, sale_until,
         ])
     players_json = json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
     print(f"  -> role matches: {role_matches} / injury matches: {inj_matches} / lineup probability matches: {lineup_prob_matches}")
