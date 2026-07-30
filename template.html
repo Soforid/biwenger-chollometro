@@ -209,7 +209,7 @@ select{
 
 /* ---- table ---- */
 .table-scroll{overflow-x:auto;border:1px solid var(--line);border-radius:10px;background:var(--surface);box-shadow:var(--shadow);}
-table{border-collapse:collapse;width:100%;min-width:1020px;}
+table{border-collapse:collapse;width:100%;min-width:1090px;}
 thead th{
   background:var(--surface-2);
   text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-dim);
@@ -243,6 +243,10 @@ tbody tr:hover{background:var(--surface-2);}
 .status-chip.sev-0{background:var(--fall-bg);color:var(--fall);}
 .status-chip.sev-1{background:color-mix(in srgb, var(--accent) 20%, transparent);color:var(--accent);}
 .status-chip.sev-2{background:var(--rise-bg);color:var(--rise);}
+.prob-chip{font-weight:600;}
+.prob-chip.prob-high{color:var(--rise);}
+.prob-chip.prob-mid{color:var(--accent);}
+.prob-chip.prob-low{color:var(--fall);}
 .role-chip{font-size:11px;padding:2px 8px;border-radius:20px;font-weight:600;white-space:nowrap;}
 .role-dios{background:linear-gradient(90deg,#caa028,#e8c766);color:#241a00;}
 .role-clave{background:var(--rise-bg);color:var(--rise);}
@@ -565,6 +569,7 @@ const COLS = [
   {key:'ptsLS', label:'Pts 25/26', sortable:true},
   {key:'value', label:'Pts / M€', sortable:true},
   {key:'nextDiff', label:'Próx. rival', sortable:true},
+  {key:'injuryProb', label:'% Titular', sortable:true},
   {key:'status', label:'Estado', sortable:false},
 ];
 
@@ -654,13 +659,20 @@ function renderTable(){
     let statusHtml;
     if(d.injuryStatusTxt){
       const sevCls = d.injuryGrav!=null ? `sev-${d.injuryGrav}` : '';
-      const probTxt = d.injuryProb!=null ? ` · ${d.injuryProb}% titular` : '';
       const title = `${d.injuryTxt||''}${d.injuryDays?` (${d.injuryDays})`:''}`.trim();
-      statusHtml = `<span class="status-chip ${sevCls}" title="${title.replace(/"/g,'&quot;')}">${d.injuryStatusTxt}${probTxt}</span>`;
+      statusHtml = `<span class="status-chip ${sevCls}" title="${title.replace(/"/g,'&quot;')}">${d.injuryStatusTxt}</span>`;
     } else if(d.status==='ok'){
       statusHtml = `<span class="status-ok">Disponible</span>`;
     } else {
       statusHtml = `<span class="status-chip">${STATUS_LABEL[d.status]||d.status}</span>`;
+    }
+
+    let probHtml;
+    if(d.injuryProb!=null){
+      const probCls = d.injuryProb>=70?'prob-high':d.injuryProb>=40?'prob-mid':'prob-low';
+      probHtml = `<span class="prob-chip ${probCls} tab">${d.injuryProb}%</span>`;
+    } else {
+      probHtml = `<span class="role-none" title="FutbolFantasy aún no ha publicado la alineación probable de esta jornada">—</span>`;
     }
 
     return `<tr>
@@ -673,6 +685,7 @@ function renderTable(){
       <td class="tab">${d.ptsLS==null?'—':d.ptsLS}</td>
       <td><div class="value-cell"><span class="tab">${d.value==null?'—':d.value.toFixed(0)}</span>${d.value!=null?`<span class="value-bar"><i style="width:${valuePct}%"></i></span>`:''}</div></td>
       <td><span class="diff-chip ${nd.cls}">${nd.label}</span></td>
+      <td>${probHtml}</td>
       <td>${statusHtml}</td>
     </tr>`;
   }).join('');
