@@ -151,35 +151,15 @@ a{color:inherit;}
 }
 .chollo-value small{font-family:'Segoe UI',sans-serif;font-weight:400;font-size:11px;color:var(--ink-dim);text-transform:none;letter-spacing:0;}
 
-/* ---- league money ---- */
-.teams-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px;margin-bottom:14px;}
-.team-card{
-  background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:12px 14px;
-  box-shadow:var(--shadow);display:flex;align-items:center;gap:10px;
-}
-.team-rank{font-family:'Oswald',sans-serif;font-weight:700;font-size:15px;color:var(--ink-dim);width:20px;flex:0 0 auto;}
-.team-info{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1 1 auto;}
-.team-name{font-weight:600;font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.team-balance{font-family:'Oswald',sans-serif;font-weight:700;font-size:16px;}
-.team-delta{font-size:11px;}
-.team-delta.up{color:var(--rise);} .team-delta.down{color:var(--fall);} .team-delta.flat{color:var(--ink-dim);}
-.transfers-card{background:var(--surface);border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow);overflow:hidden;}
-.transfers-head{padding:12px 16px;font-family:'Oswald',sans-serif;font-weight:600;font-size:12px;letter-spacing:.04em;text-transform:uppercase;color:var(--ink-dim);border-bottom:1px solid var(--line);background:var(--surface-2);}
-.transfer-row{display:flex;align-items:center;gap:10px;padding:9px 16px;border-bottom:1px solid var(--line);font-size:13px;}
-.transfer-row:last-child{border-bottom:none;}
-.transfer-date{color:var(--ink-dim);font-size:11px;width:64px;flex:0 0 auto;}
-.transfer-player{font-weight:600;flex:1 1 auto;min-width:0;}
-.transfer-arrow{color:var(--ink-dim);flex:0 0 auto;}
-.transfer-buyer{flex:0 0 auto;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.transfer-amount{font-family:'Oswald',sans-serif;font-weight:700;color:var(--accent);flex:0 0 auto;width:90px;text-align:right;}
 
 /* ---- rivals ---- */
 .rivals-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px;}
 .rival-card{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:14px 16px;box-shadow:var(--shadow);display:flex;flex-direction:column;gap:10px;}
-.rival-top{display:flex;justify-content:space-between;align-items:baseline;gap:8px;}
+.rival-top{display:flex;justify-content:space-between;align-items:flex-start;gap:8px;}
 .rival-name{font-weight:700;font-size:14.5px;}
+.rival-balance-col{display:flex;flex-direction:column;align-items:flex-end;gap:1px;}
 .rival-balance{font-family:'Oswald',sans-serif;font-weight:700;font-size:17px;}
-.rival-pending{font-size:11px;color:var(--ink-dim);}
+.rival-pending{font-size:11px;color:var(--ink-dim);cursor:default;}
 .rival-squad{display:flex;gap:6px;flex-wrap:wrap;}
 .rival-pos{font-size:11px;padding:2px 7px;border-radius:6px;background:var(--surface-2);color:var(--ink-dim);font-variant-numeric:tabular-nums;}
 .rival-pos b{color:var(--ink);}
@@ -317,7 +297,6 @@ footer{margin-top:40px;padding-top:16px;border-top:1px solid var(--line);color:v
   <div class="tabs-nav" id="tabsNav">
     <button class="tab-btn active" data-tab="chollos">Top chollos</button>
     <button class="tab-btn" data-tab="scatter">Mapa de valor</button>
-    <button class="tab-btn" data-tab="money" id="tabMoneyBtn" style="display:none">Dinero de la liga</button>
     <button class="tab-btn" data-tab="rivals" id="tabRivalsBtn" style="display:none">Rivales</button>
     <button class="tab-btn" data-tab="picks" id="tabPicksBtn" style="display:none">Fichajes recomendados</button>
     <button class="tab-btn" data-tab="players">Todos los jugadores</button>
@@ -340,18 +319,6 @@ footer{margin-top:40px;padding-top:16px;border-top:1px solid var(--line);color:v
       <canvas id="scatter" height="320"></canvas>
       <div class="tooltip" id="tip"></div>
       <div class="legend" id="legend"></div>
-    </div>
-  </div>
-
-  <div class="tab-panel" id="panel-money" style="display:none">
-    <div class="section-head">
-      <h2>Dinero de la liga</h2>
-      <span class="hint">Saldo reconstruido desde los 50 M€ de salida + historial de fichajes, ventas, canjes y ajustes del admin de tu liga privada</span>
-    </div>
-    <div class="teams-grid" id="teamsGrid"></div>
-    <div class="transfers-card">
-      <div class="transfers-head">Fichajes de la temporada</div>
-      <div id="transfersList"></div>
     </div>
   </div>
 
@@ -414,8 +381,6 @@ footer{margin-top:40px;padding-top:16px;border-top:1px solid var(--line);color:v
 <script>
 const PLAYERS = __PLAYERS__; // [id,name,team,pos,price,inc,ptsLS,status,nextDiff,role,injuryTxt,injuryDays,injuryGrav,injuryStatusTxt,injuryProb,leagueFree,leagueForSale,salePrice,saleSeller,saleUntil]
 const MARKETCAP = __MARKETCAP__; // [[yymmdd,value],...]
-const TEAMS = __TEAMS__; // [[userId,name,balance],...] sorted desc by balance
-const TRANSFERS = __TRANSFERS__; // [[dateUnix,playerName,buyerName,amount,sellerNameOrNull],...] sorted desc by date
 const RIVALS = __RIVALS__; // [[userId,name,balance,pendingFromListings,rosterValue,por,def,cen,del,ent,squadSize,wins,losses],...] sorted desc by balance
 const MEDIAN_OVERPAY = __MEDIAN_OVERPAY__; // e.g. 1.04 = winners typically pay 4% over the best losing bid
 
@@ -597,45 +562,6 @@ function renderLegend(){
   ).join('');
 }
 
-/* ---------- League money ---------- */
-function renderMoney(){
-  if(!TEAMS.length) return;
-  document.getElementById('tabMoneyBtn').style.display = '';
-
-  const grid = document.getElementById('teamsGrid');
-  grid.innerHTML = TEAMS.map(([id,name,balance],i)=>{
-    const delta = balance - 45000000; // "desde el inicio" ignora el impuesto/ajuste plano del admin a todos por igual
-    const cls = delta>0?'up':delta<0?'down':'flat';
-    const arrow = delta>0?'▲':delta<0?'▼':'—';
-    return `<div class="team-card">
-      <span class="team-rank">${i+1}</span>
-      <div class="team-info">
-        <span class="team-name">${name}</span>
-        <span class="team-delta ${cls}">${arrow} ${eurosShort(Math.abs(delta))} desde el inicio</span>
-      </div>
-      <span class="team-balance">${euros(balance)}</span>
-    </div>`;
-  }).join('');
-
-  const list = document.getElementById('transfersList');
-  if(!TRANSFERS.length){
-    list.innerHTML = `<div class="transfer-row" style="color:var(--ink-dim)">Todavía no hay fichajes esta temporada.</div>`;
-  } else {
-    list.innerHTML = TRANSFERS.slice(0,60).map(([date,player,buyer,amount,seller])=>{
-      const d = new Date(date*1000);
-      const dateTxt = d.toLocaleDateString('es-ES',{day:'2-digit',month:'2-digit'});
-      const from = seller || 'Mercado';
-      return `<div class="transfer-row">
-        <span class="transfer-date tab">${dateTxt}</span>
-        <span class="transfer-player">${player}</span>
-        <span class="transfer-arrow">${from} →</span>
-        <span class="transfer-buyer">${buyer}</span>
-        <span class="transfer-amount tab">${euros(amount)}</span>
-      </div>`;
-    }).join('');
-  }
-}
-
 /* ---------- Rivals ---------- */
 function renderRivals(){
   if(!RIVALS.length) return;
@@ -646,14 +572,16 @@ function renderRivals(){
     const counts = [por,def,cen,del,ent];
     const squadHtml = posLabels.map((lbl,i)=>`<span class="rival-pos">${lbl} <b>${counts[i]}</b></span>`).join('');
     const pendingHtml = pending>0
-      ? `<span class="rival-pending">+${euros(pending)} si le venden lo que tiene puesto a la venta ahora mismo</span>`
+      ? `<span class="rival-pending" title="Saldo si se completan las ventas que tiene puestas en el mercado ahora mismo">(${euros(balance+pending)})</span>`
       : '';
     return `<div class="rival-card">
       <div class="rival-top">
         <span class="rival-name">${name}</span>
-        <span class="rival-balance">${euros(balance)}</span>
+        <div class="rival-balance-col">
+          <span class="rival-balance">${euros(balance)}</span>
+          ${pendingHtml}
+        </div>
       </div>
-      ${pendingHtml}
       <div class="rival-squad">${squadHtml}</div>
       <div class="rival-record">
         <span>Plantilla: <b>${squadSize}</b> jug. · valor ${euros(rosterValue)}</span>
@@ -682,27 +610,76 @@ function pickScore(d){
   const prob = d.injuryProb!=null ? d.injuryProb/100 : 0.6;
   return d.value * roleWeight(d.role) * prob * fixtureWeight(d.nextDiff);
 }
-function renderPicks(){
-  if(!HAS_LEAGUE_MARKET) return;
-  document.getElementById('tabPicksBtn').style.display = '';
-  const listed = data.filter(d=> d.leagueFree || d.leagueForSale);
+const PICKS_COLS = [
+  {key:'rank', label:'#', sortable:false},
+  {key:'name', label:'Jugador', sortable:true},
+  {key:'pos', label:'Pos', sortable:true},
+  {key:'role', label:'Rol', sortable:true},
+  {key:'injuryProb', label:'% Titular', sortable:true},
+  {key:'nextDiff', label:'Próx. rival', sortable:true},
+  {key:'askPrice', label:'Precio pedido', sortable:true},
+  {key:'suggested', label:'Puja sugerida', sortable:true},
+  {key:'seller', label:'Vendedor', sortable:true},
+  {key:'score', label:'Puntuación', sortable:true},
+];
+const picksState = {sortKey:'score', sortDir:-1};
+let picksData = [];
+
+function buildPicksData(){
+  picksData = data.filter(d=> d.leagueFree || d.leagueForSale).map(d=>{
+    const askPrice = d.salePrice!=null ? d.salePrice : d.price;
+    // La puja sugerida se basa en el valor de mercado real del jugador, no en
+    // el precio pedido: cuando lo vende otro manager, ese precio suele estar
+    // inflado muy por encima de lo que realmente vale.
+    const suggested = Math.round(d.price * MEDIAN_OVERPAY / 1000) * 1000;
+    const seller = d.leagueForSale ? (d.saleSeller||'?') : 'Máquina';
+    return {...d, askPrice, suggested, seller, score: pickScore(d)};
+  });
+}
+
+function renderPicksHead(){
+  const row = document.getElementById('picksHeadRow');
+  row.innerHTML = PICKS_COLS.map(c=>{
+    const sorted = picksState.sortKey===c.key;
+    const arrow = sorted ? (picksState.sortDir===1?'▲':'▼') : '';
+    return `<th data-key="${c.key}" class="${sorted?'sorted':''}">${c.label}${c.sortable?`<span class="arrow">${arrow}</span>`:''}</th>`;
+  }).join('');
+  row.querySelectorAll('th').forEach(th=>{
+    const key = th.dataset.key;
+    if(!PICKS_COLS.find(c=>c.key===key).sortable) return;
+    th.addEventListener('click', ()=>{
+      if(picksState.sortKey===key){ picksState.sortDir*=-1; }
+      else { picksState.sortKey=key; picksState.sortDir = (key==='name'||key==='seller')?1:-1; }
+      renderPicksHead(); renderPicksTable();
+    });
+  });
+}
+
+function renderPicksTable(){
   const body = document.getElementById('picksRows');
-  const cols = ['#','Jugador','Pos','Rol','% Titular','Próx. rival','Precio','Puja sugerida','Vendedor'];
-  document.getElementById('picksHeadRow').innerHTML = cols.map(c=>`<th>${c}</th>`).join('');
-  if(!listed.length){
-    body.innerHTML = `<tr><td colspan="${cols.length}" class="empty">Hoy no hay nadie disponible en el mercado de tu liga.</td></tr>`;
+  if(!picksData.length){
+    body.innerHTML = `<tr><td colspan="${PICKS_COLS.length}" class="empty">Hoy no hay nadie disponible en el mercado de tu liga.</td></tr>`;
     return;
   }
-  const scored = listed.map(d=>({d, score: pickScore(d)})).sort((a,b)=>b.score-a.score);
-  body.innerHTML = scored.map(({d,score},i)=>{
+  const k = picksState.sortKey, dir = picksState.sortDir;
+  const sorted = [...picksData].sort((a,b)=>{
+    if(k==='role'){
+      const ai = a.role ? ROLE_ORDER.indexOf(a.role) : ROLE_ORDER.length;
+      const bi = b.role ? ROLE_ORDER.indexOf(b.role) : ROLE_ORDER.length;
+      return (ai-bi)*dir;
+    }
+    let av=a[k], bv=b[k];
+    if(av==null) av = (dir===1? Infinity : -Infinity);
+    if(bv==null) bv = (dir===1? Infinity : -Infinity);
+    if(typeof av==='string') return av.localeCompare(bv,'es')*dir;
+    return (av-bv)*dir;
+  });
+  body.innerHTML = sorted.map((d,i)=>{
     const nd = diffBucket(d.nextDiff);
     const roleHtml = d.role ? `<span class="role-chip ${ROLE_CLASS[d.role]||''}">${d.role}</span>` : `<span class="role-none">—</span>`;
     const probHtml = d.injuryProb!=null
       ? `<span class="prob-chip ${d.injuryProb>=70?'prob-high':d.injuryProb>=40?'prob-mid':'prob-low'} tab">${d.injuryProb}%</span>`
       : `<span class="role-none">—</span>`;
-    const price = d.salePrice!=null ? d.salePrice : d.price;
-    const suggested = Math.round(price * MEDIAN_OVERPAY / 1000) * 1000;
-    const vendedor = d.leagueForSale ? (d.saleSeller||'?') : 'Máquina';
     return `<tr>
       <td class="tab" style="color:var(--ink-dim)">${i+1}</td>
       <td><div class="pname">${d.name}</div><div class="pteam">${d.team}</div></td>
@@ -710,11 +687,19 @@ function renderPicks(){
       <td>${roleHtml}</td>
       <td>${probHtml}</td>
       <td><span class="diff-chip ${nd.cls}">${nd.label}</span></td>
-      <td class="tab">${euros(price)}</td>
-      <td class="tab" style="color:var(--accent);font-weight:700">${euros(suggested)}</td>
-      <td class="pteam">${vendedor}</td>
+      <td class="tab">${euros(d.askPrice)}</td>
+      <td class="tab" style="color:var(--accent);font-weight:700">${euros(d.suggested)}</td>
+      <td class="pteam">${d.seller}</td>
     </tr>`;
   }).join('');
+}
+
+function renderPicks(){
+  if(!HAS_LEAGUE_MARKET) return;
+  document.getElementById('tabPicksBtn').style.display = '';
+  buildPicksData();
+  renderPicksHead();
+  renderPicksTable();
 }
 
 /* ---------- Controls + table ---------- */
@@ -891,7 +876,6 @@ if(HAS_LEAGUE_MARKET){
 renderKPIs();
 renderSpark();
 renderChollos();
-renderMoney();
 renderRivals();
 renderPicks();
 renderScatter();

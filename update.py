@@ -377,7 +377,7 @@ def main():
         return found[0] if len(found) == 1 else None
 
     print("[6/9] Fetching league money, market and rivals (Biwenger, read-only)...")
-    teams_json, transfers_json, rivals_json = "[]", "[]", "[]"
+    rivals_json = "[]"
     market = {}
     median_overpay = 1.10
     token = os.environ.get("BIWENGER_TOKEN")
@@ -389,8 +389,6 @@ def main():
         try:
             league_data = fetch_league_money(token, league_id, player_names)
             if league_data is not None:
-                teams_json = json.dumps(league_data["team_rows"], ensure_ascii=False, separators=(",", ":"))
-                transfers_json = json.dumps(league_data["transfers"], ensure_ascii=False, separators=(",", ":"))
                 market = league_data["market"]
                 median_overpay = league_data["median_overpay"]
                 print(f"  -> {len(league_data['team_rows'])} managers, {len(league_data['transfers'])} fichajes esta temporada")
@@ -480,8 +478,6 @@ def main():
             .replace("__MARKETCAP__", mc_line)
             .replace("__FONT600__", font600)
             .replace("__FONT700__", font700)
-            .replace("__TEAMS__", teams_json)
-            .replace("__TRANSFERS__", transfers_json)
             .replace("__RIVALS__", rivals_json)
             .replace("__MEDIAN_OVERPAY__", json.dumps(median_overpay)))
     out_path = ROOT / "biwenger.html"
