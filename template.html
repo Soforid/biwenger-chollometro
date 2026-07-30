@@ -350,7 +350,6 @@ footer{margin-top:40px;padding-top:16px;border-top:1px solid var(--line);color:v
       <div class="postabs" id="postabs"></div>
       <select id="teamSel"></select>
       <select id="roleSel"></select>
-      <label class="chk-wrap"><input class="chk" type="checkbox" id="onlyOk"> Solo disponibles</label>
       <label class="chk-wrap" id="onlyLeagueMarketWrap" style="display:none"><input class="chk" type="checkbox" id="onlyLeagueMarket"> Solo en el mercado de mi liga</label>
       <select id="leagueMarketMode" style="display:none">
         <option value="all">Todos</option>
@@ -598,7 +597,7 @@ function renderMoney(){
 }
 
 /* ---------- Controls + table ---------- */
-const state = {search:'', pos:'all', team:'all', role:'all', onlyOk:false, onlyLeagueMarket:false, leagueMarketMode:'all', sortKey:'value', sortDir:-1};
+const state = {search:'', pos:'all', team:'all', role:'all', onlyLeagueMarket:false, leagueMarketMode:'all', sortKey:'value', sortDir:-1};
 
 const COLS = [
   {key:'rank', label:'#', sortable:false},
@@ -660,7 +659,6 @@ function filteredSorted(){
     if(state.team!=='all' && d.team!==state.team) return false;
     if(state.role==='none' && d.role) return false;
     if(state.role!=='all' && state.role!=='none' && d.role!==state.role) return false;
-    if(state.onlyOk && d.status!=='ok') return false;
     if(state.onlyLeagueMarket){
       if(!(d.leagueFree || d.leagueForSale)) return false;
       if(state.leagueMarketMode==='free' && !d.leagueFree) return false;
@@ -757,7 +755,6 @@ document.querySelectorAll('.tab-btn').forEach(b=>{
 
 /* ---------- init ---------- */
 document.getElementById('search').addEventListener('input', e=>{ state.search=e.target.value; renderTable(); });
-document.getElementById('onlyOk').addEventListener('change', e=>{ state.onlyOk=e.target.checked; renderTable(); });
 
 if(HAS_LEAGUE_MARKET){
   document.getElementById('onlyLeagueMarketWrap').style.display = '';
