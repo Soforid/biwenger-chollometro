@@ -636,9 +636,35 @@ function roleProb01(d){
 // BID_SPREAD: ese es el margen que de verdad separa "fichaje típico" de
 // "fichaje muy disputado" esta temporada, así que ningún jugador -por bueno
 // que sea- puede acabar sugiriendo más que eso.
+// Que un jugador sea "Clave" no sirve de nada si ahora mismo nadie en la
+// liga puede permitirse pelear por él: al principio de temporada casi todos
+// tienen el banco lleno pero 0-3 jugadores, y ese dinero está en realidad
+// comprometido para completar el mínimo de 11 (y a poder ser más), no libre
+// para volcarlo en un solo fichaje. Para cada rival estimamos cuánto le
+// tocaría de media por cada hueco que le queda por cubrir en la plantilla
+// (banco + pendiente de venta, repartido entre los fichajes que aún necesita
+// para llegar a una plantilla completa) - ese es su presupuesto "de sobra"
+// realista para UN jugador, no todo lo que tiene en el banco.
+const TARGET_SQUAD = 20; // tamaño aproximado de una plantilla ya formada en esta liga
+const RIVALS_BUDGET = RIVALS.map(r=>{
+  const [id,name,balance,pending,rosterValue,por,def,cen,del,ent,squadSize] = r;
+  const stillNeeded = Math.max(1, TARGET_SQUAD - squadSize);
+  return (balance + pending) / stillNeeded;
+});
+
+function competitionFactor(d){
+  if(!RIVALS_BUDGET.length) return 1; // sin datos de liga, no penalizamos
+  // "Capaz de pelear" = su reparto medio por hueco ya cubre el precio del
+  // jugador (con margen); por debajo de eso tendría que desviar dinero de
+  // otros fichajes que todavía necesita, algo que la mayoría no hace salvo
+  // por 1-2 objetivos muy concretos.
+  const capable = RIVALS_BUDGET.filter(b => b >= d.price * 0.6).length;
+  return clamp01(capable / 3); // con 3+ rivales capaces, se aplica el margen completo
+}
+
 function demandRatio(d){
   const posMedian = BID_MEDIAN_BY_POS[d.pos] ?? BID_MEDIAN_BY_POS[3] ?? 1.10;
-  return posMedian + roleProb01(d) * BID_SPREAD;
+  return posMedian + roleProb01(d) * BID_SPREAD * competitionFactor(d);
 }
 // Fusionado dentro de "Todos los jugadores": estos campos se calculan para
 // todo jugador disponible en el mercado de tu liga (el resto se quedan a
