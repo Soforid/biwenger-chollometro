@@ -84,7 +84,17 @@ def fetch_auth(url, token, league_id=None, x_user=None):
         return json.loads(r.read().decode("utf-8"))
 
 
-def fetch_league_money(token, league_id, player_names):
+def percentile(sorted_vals, p):
+    if not sorted_vals:
+        return None
+    k = (len(sorted_vals) - 1) * p
+    f, c = int(k), min(int(k) + 1, len(sorted_vals) - 1)
+    if f == c:
+        return sorted_vals[f]
+    return sorted_vals[f] + (sorted_vals[c] - sorted_vals[f]) * (k - f)
+
+
+def fetch_league_money(token, league_id, player_names, player_prices):
     """Read-only: reconstructs each manager's balance since this season's reset
     (45M start) from the public transfer feed, since Biwenger hides other
     managers' live balance when the league's 'balance' privacy setting is on.
@@ -107,7 +117,12 @@ def fetch_league_money(token, league_id, player_names):
     # the 'bids' array of listings someone else won) - both are a proxy for
     # how active/aggressive a manager is in the market.
     bid_stats = {uid: {"wins": 0, "losses": 0, "lastLossAmount": []} for uid in users}
-    overpay_ratios = []  # winning_amount / highest_losing_bid, for listings with competing bids
+    # winning_amount / the player's CURRENT general market value, for free-agent
+    # (machine-pool) signings this season. This is what "puja sugerida" is based
+    # on: not how much the winner beat the runner-up by (that undersells early
+    # season, when cash-rich/squad-light managers routinely pay well above
+    # nominal value), but how much people actually pay relative to real value.
+    value_ratios = []
     HANDLED_TYPES = {"market", "adminTransfer", "transfer", "bonus",
                       "seasonStarted", "seasonFinished",
                       "adminText", "playerMovements", "leagueSettings",
@@ -148,10 +163,9 @@ def fetch_league_money(token, league_id, player_names):
                         if bidder in bid_stats:
                             bid_stats[bidder]["losses"] += 1
                             bid_stats[bidder]["lastLossAmount"].append(b.get("amount", 0))
-                    if bids and amount > 0:
-                        top_losing_bid = max(b.get("amount", 0) for b in bids)
-                        if top_losing_bid > 0:
-                            overpay_ratios.append(amount / top_losing_bid)
+                    current_value = player_prices.get(c.get("player"))
+                    if current_value and current_value >= 200000:
+                        value_ratios.append(amount / current_value)
                     transfers.append([
                         item["date"], player_names.get(c.get("player"), "?"),
                         buyer["name"] if buyer else "?", amount,
@@ -197,13 +211,20 @@ def fetch_league_money(token, league_id, player_names):
     team_rows = sorted(([uid, users[uid], balances[uid]] for uid in users), key=lambda r: -r[2])
     transfers.sort(key=lambda t: -t[0])
 
-    overpay_ratios.sort()
-    if overpay_ratios:
-        median_overpay = overpay_ratios[len(overpay_ratios) // 2]
-        print(f"  -> {len(overpay_ratios)} pujas competidas, sobreprecio típico del ganador: +{(median_overpay-1)*100:.0f}%")
+    value_ratios.sort()
+    if len(value_ratios) >= 5:
+        median_ratio = percentile(value_ratios, 0.5)
+        # The median is dragged down by uncontested signings (ratio ~1.0, no
+        # rival bids). Use the 75th percentile instead: roughly what it takes
+        # to win a listing that DOES draw competition, which is the case this
+        # feature is actually for - suggesting a bid low enough to just clear
+        # the median routinely loses against real competing bidders.
+        bid_multiplier = percentile(value_ratios, 0.75)
+        print(f"  -> {len(value_ratios)} fichajes libres analizados: mediana {median_ratio:.2f}x el valor de mercado, "
+              f"p75 {bid_multiplier:.2f}x (usado para la puja sugerida)")
     else:
-        median_overpay = 1.10  # not enough competitive-bid history yet this season - conservative default
-        print("  -> sin histórico suficiente de pujas competidas, uso margen por defecto (+10%)")
+        bid_multiplier = 1.25  # not enough purchase history yet this season - conservative early-season default
+        print(f"  -> solo {len(value_ratios)} fichajes libres, histórico insuficiente, uso margen por defecto (1.25x)")
 
     # The league's actual daily market listing: the system auto-adds ~20 free
     # ("Lliure", user is null) players per day, plus whatever other managers
@@ -237,7 +258,7 @@ def fetch_league_money(token, league_id, player_names):
     return {
         "team_rows": team_rows, "transfers": transfers, "market": market,
         "bid_stats": bid_stats, "rosters": rosters, "users": users,
-        "median_overpay": median_overpay,
+        "bid_multiplier": bid_multiplier,
     }
 
 
@@ -379,18 +400,19 @@ def main():
     print("[6/9] Fetching league money, market and rivals (Biwenger, read-only)...")
     rivals_json = "[]"
     market = {}
-    median_overpay = 1.10
+    bid_multiplier = 1.25
     token = os.environ.get("BIWENGER_TOKEN")
     if token:
         league_id = os.environ.get("BIWENGER_LEAGUE_ID", DEFAULT_LEAGUE_ID)
         player_names = {p["id"]: p["name"] for p in players}
         pos_by_id = {p["id"]: p["pos"] for p in players}
         players_by_id = {p["id"]: p for p in players}
+        player_prices = {p["id"]: p["price"] for p in players}
         try:
-            league_data = fetch_league_money(token, league_id, player_names)
+            league_data = fetch_league_money(token, league_id, player_names, player_prices)
             if league_data is not None:
                 market = league_data["market"]
-                median_overpay = league_data["median_overpay"]
+                bid_multiplier = league_data["bid_multiplier"]
                 print(f"  -> {len(league_data['team_rows'])} managers, {len(league_data['transfers'])} fichajes esta temporada")
 
                 # Any owned player can be instant-sold to the market ("machine")
@@ -479,7 +501,7 @@ def main():
             .replace("__FONT600__", font600)
             .replace("__FONT700__", font700)
             .replace("__RIVALS__", rivals_json)
-            .replace("__MEDIAN_OVERPAY__", json.dumps(median_overpay)))
+            .replace("__BID_MULTIPLIER__", json.dumps(bid_multiplier)))
     out_path = ROOT / "biwenger.html"
     out_path.write_text(html, encoding="utf-8")
     print(f"  -> wrote {out_path} ({out_path.stat().st_size} bytes)")

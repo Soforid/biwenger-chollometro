@@ -382,7 +382,7 @@ footer{margin-top:40px;padding-top:16px;border-top:1px solid var(--line);color:v
 const PLAYERS = __PLAYERS__; // [id,name,team,pos,price,inc,ptsLS,status,nextDiff,role,injuryTxt,injuryDays,injuryGrav,injuryStatusTxt,injuryProb,leagueFree,leagueForSale,salePrice,saleSeller,saleUntil]
 const MARKETCAP = __MARKETCAP__; // [[yymmdd,value],...]
 const RIVALS = __RIVALS__; // [[userId,name,balance,pendingFromListings,rosterValue,por,def,cen,del,ent,squadSize,wins,losses],...] sorted desc by balance
-const MEDIAN_OVERPAY = __MEDIAN_OVERPAY__; // e.g. 1.04 = winners typically pay 4% over the best losing bid
+const BID_MULTIPLIER = __BID_MULTIPLIER__; // e.g. 1.25 = free-agent winners typically pay 25% over market value (p75 of this season's purchases, excluding sub-200k filler buys)
 
 const POS_LABEL = {1:'POR',2:'DEF',3:'CEN',4:'DEL',5:'ENT'};
 const POS_NAME = {1:'Portero',2:'Defensa',3:'Centrocampista',4:'Delantero',5:'Entrenador'};
@@ -628,10 +628,17 @@ let picksData = [];
 function buildPicksData(){
   picksData = data.filter(d=> d.leagueFree || d.leagueForSale).map(d=>{
     const askPrice = d.salePrice!=null ? d.salePrice : d.price;
-    // La puja sugerida se basa en el valor de mercado real del jugador, no en
-    // el precio pedido: cuando lo vende otro manager, ese precio suele estar
-    // inflado muy por encima de lo que realmente vale.
-    const suggested = Math.round(d.price * MEDIAN_OVERPAY / 1000) * 1000;
+    // Base: valor de mercado real del jugador (no el precio pedido, que si lo
+    // vende otro manager suele estar inflado) por el sobreprecio típico que de
+    // verdad se paga en tu liga esta temporada (percentil 75 de las compras a
+    // la máquina, excluyendo fichajes de relleno <200k, no solo lo justo para
+    // ganar al segundo mejor postor).
+    const base = d.price * BID_MULTIPLIER;
+    // Si el precio ya está en subida, los rivales saben que recuperarán ese
+    // dinero en un par de días y pujan contando con ello: sumamos ~2 días de
+    // la tendencia actual.
+    const momentum = d.inc > 0 ? d.inc * 2 : 0;
+    const suggested = Math.max(Math.round((base + momentum) / 1000) * 1000, askPrice);
     const seller = d.leagueForSale ? (d.saleSeller||'?') : 'Máquina';
     return {...d, askPrice, suggested, seller, score: pickScore(d)};
   });
