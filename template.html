@@ -813,8 +813,11 @@ function renderTable(){
       marketBadge = `<span class="market-badge market-forsale" title="En venta por ${d.saleSeller||'?'} · ${euros(d.salePrice||0)} · finaliza ${untilTxt}">En venta</span>`;
     }
 
+    const askPriceHtml = d.askPrice==null ? '—' : (d.askPrice!==d.price
+      ? `${euros(d.askPrice)}<div class="pteam">(${euros(d.price)})</div>`
+      : euros(d.askPrice));
     const marketCells = !showMarketCols ? '' : `
-      <td class="tab">${d.askPrice==null?'—':euros(d.askPrice)}</td>
+      <td class="tab">${askPriceHtml}</td>
       <td class="tab" style="color:var(--accent);font-weight:700">${d.suggested==null?'—':euros(d.suggested)}</td>
       <td class="pteam">${d.seller||'—'}</td>
       <td class="tab">${d.score==null?'—':d.score.toFixed(0)}</td>`;
