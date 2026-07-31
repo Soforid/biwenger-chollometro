@@ -662,9 +662,33 @@ function competitionFactor(d){
   return clamp01(capable / 3); // con 3+ rivales capaces, se aplica el margen completo
 }
 
+// Cómo se mueve el precio HOY es la señal más directa de si hay pelea real
+// por él ahora mismo - más fiable que estimar a partir de rol/titularidad,
+// porque es lo que los propios managers ya están haciendo con su dinero. Si
+// el precio baja, a nadie le interesa lo bastante como para pujar por
+// encima de él (se anula casi toda la prima: se espera ganarlo sin
+// competencia, al precio pedido). Si sube con fuerza, hay compradores
+// activos ahora mismo, y encima saben que recuperarán la subida en un par
+// de días, así que refuerza la prima por encima de lo que ya da el resto
+// del modelo. Los umbrales de corte son una estimación razonable, no una
+// calibración con datos (no tenemos un histórico de "cuántas pujas recibió
+// cada fichaje según cómo se estaba moviendo su precio ese día").
+function momentumFactor(d){
+  const pct = d.price>0 ? d.inc/d.price : 0;
+  if(pct <= -0.005) return 0; // bajando con claridad -> sin prima
+  if(pct < 0) return clamp01(1 + pct*200); // rampa suave entre 0% y -0.5%
+  return 1 + Math.min(pct*20, 0.6); // subiendo -> refuerzo, tope +60%
+}
+
 function demandRatio(d){
   const posMedian = BID_MEDIAN_BY_POS[d.pos] ?? BID_MEDIAN_BY_POS[3] ?? 1.10;
-  return posMedian + roleProb01(d) * BID_SPREAD * competitionFactor(d);
+  // Toda la prima sobre el precio -tanto la típica de su posición como el
+  // extra por rol/titularidad/competencia real- se escala por el momentum:
+  // un jugador cuyo precio cae no se libra de perder también la prima
+  // "de base" solo porque su posición suele venderse algo por encima de
+  // valor en general.
+  const structuralPremium = (posMedian - 1) + roleProb01(d) * BID_SPREAD * competitionFactor(d);
+  return 1 + structuralPremium * momentumFactor(d);
 }
 // Fusionado dentro de "Todos los jugadores": estos campos se calculan para
 // todo jugador disponible en el mercado de tu liga (el resto se quedan a
@@ -682,13 +706,9 @@ function augmentMarketFields(){
     // ajustado (dentro de un margen acotado por lo que realmente separa un
     // fichaje típico de uno muy disputado) según lo titular/importante que
     // es este jugador en concreto.
-    const base = d.price * demandRatio(d);
-    // Si el precio ya está en subida, los rivales saben que recuperarán ese
-    // dinero en un par de días y pujan contando con ello: sumamos ~2 días de
-    // la tendencia actual.
-    const momentum = d.inc > 0 ? d.inc * 2 : 0;
+    const base = d.price * demandRatio(d); // ya incluye el efecto de la subida/bajada de hoy (ver momentumFactor)
     d.askPrice = askPrice;
-    d.suggested = Math.max(Math.round((base + momentum) / 1000) * 1000, askPrice);
+    d.suggested = Math.max(Math.round(base / 1000) * 1000, askPrice);
     d.seller = d.leagueForSale ? (d.saleSeller||'?') : 'Máquina';
     d.score = pickScore(d);
   });
