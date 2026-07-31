@@ -645,7 +645,7 @@ function roleProb01(d){
 // (banco + pendiente de venta, repartido entre los fichajes que aún necesita
 // para llegar a una plantilla completa) - ese es su presupuesto "de sobra"
 // realista para UN jugador, no todo lo que tiene en el banco.
-const TARGET_SQUAD = 20; // tamaño aproximado de una plantilla ya formada en esta liga
+const TARGET_SQUAD = 18; // máximo de jugadores por plantilla en esta liga
 const RIVALS_BUDGET = RIVALS.map(r=>{
   const [id,name,balance,pending,rosterValue,por,def,cen,del,ent,squadSize] = r;
   const stillNeeded = Math.max(1, TARGET_SQUAD - squadSize);
