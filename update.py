@@ -94,7 +94,7 @@ def percentile(sorted_vals, p):
     return sorted_vals[f] + (sorted_vals[c] - sorted_vals[f]) * (k - f)
 
 
-def fetch_league_money(token, league_id, player_names, player_prices):
+def fetch_league_money(token, league_id, player_names, player_prices, player_pos):
     """Read-only: reconstructs each manager's balance since this season's reset
     (45M start) from the public transfer feed, since Biwenger hides other
     managers' live balance when the league's 'balance' privacy setting is on.
@@ -122,7 +122,13 @@ def fetch_league_money(token, league_id, player_names, player_prices):
     # on: not how much the winner beat the runner-up by (that undersells early
     # season, when cash-rich/squad-light managers routinely pay well above
     # nominal value), but how much people actually pay relative to real value.
+    # Tracked per position too: real data shows the premium is NOT the same
+    # across positions (e.g. goalkeepers historically sell for LESS above
+    # value than outfield players do, the opposite of what "scarcity" would
+    # naively predict) - grounding the model in what was actually paid per
+    # position beats a generic heuristic.
     value_ratios = []
+    value_ratios_by_pos = {1: [], 2: [], 3: [], 4: [], 5: []}
     HANDLED_TYPES = {"market", "adminTransfer", "transfer", "bonus",
                       "seasonStarted", "seasonFinished",
                       "adminText", "playerMovements", "leagueSettings",
@@ -165,7 +171,11 @@ def fetch_league_money(token, league_id, player_names, player_prices):
                             bid_stats[bidder]["lastLossAmount"].append(b.get("amount", 0))
                     current_value = player_prices.get(c.get("player"))
                     if current_value and current_value >= 200000:
-                        value_ratios.append(amount / current_value)
+                        ratio = amount / current_value
+                        value_ratios.append(ratio)
+                        pos = player_pos.get(c.get("player"))
+                        if pos in value_ratios_by_pos:
+                            value_ratios_by_pos[pos].append(ratio)
                     transfers.append([
                         item["date"], player_names.get(c.get("player"), "?"),
                         buyer["name"] if buyer else "?", amount,
@@ -212,19 +222,40 @@ def fetch_league_money(token, league_id, player_names, player_prices):
     transfers.sort(key=lambda t: -t[0])
 
     value_ratios.sort()
+    DEFAULT_MEDIAN = 1.10  # not enough purchase history yet this season - conservative early-season default
+    DEFAULT_SPREAD = 0.15
     if len(value_ratios) >= 5:
-        median_ratio = percentile(value_ratios, 0.5)
-        # The median is dragged down by uncontested signings (ratio ~1.0, no
-        # rival bids). Use the 75th percentile instead: roughly what it takes
-        # to win a listing that DOES draw competition, which is the case this
-        # feature is actually for - suggesting a bid low enough to just clear
-        # the median routinely loses against real competing bidders.
-        bid_multiplier = percentile(value_ratios, 0.75)
-        print(f"  -> {len(value_ratios)} fichajes libres analizados: mediana {median_ratio:.2f}x el valor de mercado, "
-              f"p75 {bid_multiplier:.2f}x (usado para la puja sugerida)")
+        global_median = percentile(value_ratios, 0.5)
+        # The gap between the median and the 75th percentile is how much MORE
+        # a genuinely contested listing goes for, on top of the typical case -
+        # used below as the ceiling for how far role/titularity can push an
+        # individual player's suggested bid above his position's baseline.
+        # Capped so a couple of freak outlier sales (e.g. one wildly contested
+        # transfer) can't blow up every suggestion.
+        bid_spread = min(max(percentile(value_ratios, 0.75) - global_median, 0.05), 0.35)
+        print(f"  -> {len(value_ratios)} fichajes libres analizados: mediana {global_median:.2f}x el valor de mercado, "
+              f"margen por disputa +{bid_spread:.2f}x")
     else:
-        bid_multiplier = 1.25  # not enough purchase history yet this season - conservative early-season default
-        print(f"  -> solo {len(value_ratios)} fichajes libres, histórico insuficiente, uso margen por defecto (1.25x)")
+        global_median = DEFAULT_MEDIAN
+        bid_spread = DEFAULT_SPREAD
+        print(f"  -> solo {len(value_ratios)} fichajes libres, histórico insuficiente, uso valores por defecto "
+              f"(mediana {DEFAULT_MEDIAN:.2f}x, margen +{DEFAULT_SPREAD:.2f}x)")
+
+    # Per-position median, shrunk toward the league-wide median when a position
+    # has few samples (e.g. only a handful of goalkeepers change hands) so
+    # noise in a small sample can't swing that position's baseline too far.
+    SHRINK_K = 10
+    bid_median_by_pos = {}
+    pos_names = {1: "POR", 2: "DEF", 3: "CEN", 4: "DEL", 5: "ENT"}
+    for pos in (1, 2, 3, 4, 5):
+        ratios = sorted(value_ratios_by_pos.get(pos, []))
+        n = len(ratios)
+        pos_median = percentile(ratios, 0.5) if ratios else global_median
+        weight = min(n, SHRINK_K) / SHRINK_K
+        blended = pos_median * weight + global_median * (1 - weight)
+        bid_median_by_pos[pos] = round(blended, 3)
+        if n:
+            print(f"     {pos_names[pos]}: n={n} mediana real {pos_median:.2f}x -> {blended:.2f}x usado (peso {weight:.1f})")
 
     # The league's actual daily market listing: the system auto-adds ~20 free
     # ("Lliure", user is null) players per day, plus whatever other managers
@@ -258,7 +289,7 @@ def fetch_league_money(token, league_id, player_names, player_prices):
     return {
         "team_rows": team_rows, "transfers": transfers, "market": market,
         "bid_stats": bid_stats, "rosters": rosters, "users": users,
-        "bid_multiplier": bid_multiplier,
+        "bid_median_by_pos": bid_median_by_pos, "bid_spread": bid_spread,
     }
 
 
@@ -400,7 +431,8 @@ def main():
     print("[6/9] Fetching league money, market and rivals (Biwenger, read-only)...")
     rivals_json = "[]"
     market = {}
-    bid_multiplier = 1.25
+    bid_median_by_pos = {1: 1.10, 2: 1.10, 3: 1.10, 4: 1.10, 5: 1.10}
+    bid_spread = 0.15
     token = os.environ.get("BIWENGER_TOKEN")
     if token:
         league_id = os.environ.get("BIWENGER_LEAGUE_ID", DEFAULT_LEAGUE_ID)
@@ -409,10 +441,11 @@ def main():
         players_by_id = {p["id"]: p for p in players}
         player_prices = {p["id"]: p["price"] for p in players}
         try:
-            league_data = fetch_league_money(token, league_id, player_names, player_prices)
+            league_data = fetch_league_money(token, league_id, player_names, player_prices, pos_by_id)
             if league_data is not None:
                 market = league_data["market"]
-                bid_multiplier = league_data["bid_multiplier"]
+                bid_median_by_pos = league_data["bid_median_by_pos"]
+                bid_spread = league_data["bid_spread"]
                 print(f"  -> {len(league_data['team_rows'])} managers, {len(league_data['transfers'])} fichajes esta temporada")
 
                 # Any owned player can be instant-sold to the market ("machine")
@@ -501,7 +534,8 @@ def main():
             .replace("__FONT600__", font600)
             .replace("__FONT700__", font700)
             .replace("__RIVALS__", rivals_json)
-            .replace("__BID_MULTIPLIER__", json.dumps(bid_multiplier)))
+            .replace("__BID_MEDIAN_BY_POS__", json.dumps({str(k): v for k, v in bid_median_by_pos.items()}))
+            .replace("__BID_SPREAD__", json.dumps(round(bid_spread, 3))))
     out_path = ROOT / "biwenger.html"
     out_path.write_text(html, encoding="utf-8")
     print(f"  -> wrote {out_path} ({out_path.stat().st_size} bytes)")

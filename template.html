@@ -386,7 +386,8 @@ footer{margin-top:40px;padding-top:16px;border-top:1px solid var(--line);color:v
 const PLAYERS = __PLAYERS__; // [id,name,team,pos,price,inc,ptsLS,status,nextDiff,role,injuryTxt,injuryDays,injuryGrav,injuryStatusTxt,injuryProb,leagueFree,leagueForSale,salePrice,saleSeller,saleUntil]
 const MARKETCAP = __MARKETCAP__; // [[yymmdd,value],...]
 const RIVALS = __RIVALS__; // [[userId,name,balance,pendingFromListings,rosterValue,por,def,cen,del,ent,squadSize,wins,losses],...] sorted desc by balance
-const BID_MULTIPLIER = __BID_MULTIPLIER__; // e.g. 1.25 = free-agent winners typically pay 25% over market value (p75 of this season's purchases, excluding sub-200k filler buys)
+const BID_MEDIAN_BY_POS = __BID_MEDIAN_BY_POS__; // {"1":1.08,"2":1.14,...} real median winning_amount/value per position this season (POR/DEF/CEN/DEL/ENT), excluding sub-200k filler buys
+const BID_SPREAD = __BID_SPREAD__; // p75-minus-median gap of this season's purchases: how much further a genuinely contested listing goes, on top of its position's median
 
 const POS_LABEL = {1:'POR',2:'DEF',3:'CEN',4:'DEL',5:'ENT'};
 const POS_NAME = {1:'Portero',2:'Defensa',3:'Centrocampista',4:'Delantero',5:'Entrenador'};
@@ -633,35 +634,31 @@ function pickScore(d){
   return d.value * roleWeight(d.role) * prob * fixtureWeight(d.nextDiff);
 }
 
-// Cuántos jugadores de rol Clave/Dios hay en cada posición en TODA LaLiga:
-// pocos alternativas -> los pocos que salen al mercado se pelean más (esto es
-// lo que hace que un portero o un central de puntuación alta sean más
-// disputados que un centrocampista igual de "clave", sin tener que
-// codificar posiciones a mano).
-const ELITE_ROLES = new Set(['Dios','Clave']);
-const eliteCountByPos = {};
-data.forEach(d=>{ if(ELITE_ROLES.has(d.role)) eliteCountByPos[d.pos] = (eliteCountByPos[d.pos]||0)+1; });
+// Punto de partida por posición: la mediana REAL de lo pagado esta temporada
+// por fichajes libres de esa posición (ya viene calculada en el pipeline a
+// partir del histórico de fichajes, no es un supuesto). Nos fiamos de los
+// datos en vez de asumir que "hay pocos porteros buenos -> se pagan más":
+// de hecho esta temporada los porteros se han pagado con MENOS sobreprecio
+// que el resto de posiciones, justo lo contrario de lo que esa intuición
+// diría, así que cualquier heurística de "escasez" inventada sin mirar el
+// histórico real habría acertado justo al revés.
+function clamp01(v){ return Math.max(0, Math.min(1, v)); }
 
-function scarcityFactor(d){
-  if(!ELITE_ROLES.has(d.role)) return 1.0;
-  const eliteAtPos = eliteCountByPos[d.pos] || 1;
-  // Normalizado contra ~8 "elite" por posición como referencia de "no escaso".
-  const scarce = Math.max(0, 8 - eliteAtPos) / 8;
-  return 1 + scarce * 0.25; // hasta +25% cuando casi no hay alternativas
+function roleProb01(d){
+  // 0 = suplente claro sin sitio fijo, 1 = titular indiscutible de máximo nivel
+  const roleFrac = clamp01((roleWeight(d.role) - 0.5) / (1.3 - 0.5));
+  const probFrac = d.injuryProb!=null ? d.injuryProb/100 : 0.7;
+  return roleFrac*0.5 + probFrac*0.5;
 }
 
-// El sobreprecio típico (BID_MULTIPLIER) es una media de toda la liga; esto
-// lo reparte según lo disputado que está CADA jugador en concreto, en vez de
-// aplicar el mismo % a todos por igual.
-function demandFactor(d){
-  const role = roleWeight(d.role); // 0.5..1.3, 1.0 = Rotación (referencia neutra)
-  const roleFactor = 1 + (role - 1) * 0.6;
-  // Titular fijo (>=70%) se paga casi toda la prima; suplente claro (<30%) se
-  // paga bastante menos porque puede no llegar a jugar. Sin dato, se asume
-  // titular habitual (la mayoría de jugadores sin duda ni lesión lo son).
-  const prob = d.injuryProb!=null ? d.injuryProb/100 : 0.75;
-  const probFactor = 0.75 + prob * 0.35;
-  return roleFactor * probFactor * scarcityFactor(d);
+// Cuánto por encima de la mediana de su posición se paga depende de lo
+// disputado que esté ESE jugador (rol + titularidad), pero nunca más de
+// BID_SPREAD: ese es el margen que de verdad separa "fichaje típico" de
+// "fichaje muy disputado" esta temporada, así que ningún jugador -por bueno
+// que sea- puede acabar sugiriendo más que eso.
+function demandRatio(d){
+  const posMedian = BID_MEDIAN_BY_POS[d.pos] ?? BID_MEDIAN_BY_POS[3] ?? 1.10;
+  return posMedian + roleProb01(d) * BID_SPREAD;
 }
 const PICKS_COLS = [
   {key:'rank', label:'#', sortable:false},
@@ -682,12 +679,12 @@ function buildPicksData(){
   picksData = data.filter(d=> d.leagueFree || d.leagueForSale).map(d=>{
     const askPrice = d.salePrice!=null ? d.salePrice : d.price;
     // Base: valor de mercado real del jugador (no el precio pedido, que si lo
-    // vende otro manager suele estar inflado) por el sobreprecio típico que de
-    // verdad se paga en tu liga esta temporada (percentil 75 de las compras a
-    // la máquina, excluyendo fichajes de relleno <200k), repartido según lo
-    // disputado que está ESTE jugador en concreto (rol, titularidad, escasez
-    // en su posición) en vez de aplicar el mismo % a todos por igual.
-    const base = d.price * BID_MULTIPLIER * demandFactor(d);
+    // vende otro manager suele estar inflado) por el sobreprecio que de
+    // verdad se ha pagado esta temporada por jugadores de SU posición,
+    // ajustado (dentro de un margen acotado por lo que realmente separa un
+    // fichaje típico de uno muy disputado) según lo titular/importante que
+    // es este jugador en concreto.
+    const base = d.price * demandRatio(d);
     // Si el precio ya está en subida, los rivales saben que recuperarán ese
     // dinero en un par de días y pujan contando con ello: sumamos ~2 días de
     // la tendencia actual.
