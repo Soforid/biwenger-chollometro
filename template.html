@@ -335,6 +335,10 @@ footer{margin-top:40px;padding-top:16px;border-top:1px solid var(--line);color:v
       <h2>Fichajes recomendados</h2>
       <span class="hint">Jugadores disponibles ahora mismo en el mercado de tu liga, puntuados por valor, rol, forma y calendario</span>
     </div>
+    <div class="controls">
+      <label class="chk-wrap"><input class="chk" type="checkbox" id="picksOnlyMachine"> Solo mercado (máquina)</label>
+      <label class="chk-wrap"><input class="chk" type="checkbox" id="picksOnlyUsers"> Solo de otros managers</label>
+    </div>
     <div class="table-scroll">
       <table>
         <thead>
@@ -416,21 +420,33 @@ function diffBucket(nd){
 }
 
 /* ---------- KPIs ---------- */
+function marketPctChange(daysAgo){
+  const lastIdx = MARKETCAP.length-1;
+  const idx = lastIdx-daysAgo;
+  if(idx<0) return null;
+  const base = MARKETCAP[idx][1];
+  return (MARKETCAP[lastIdx][1]-base)/base*100;
+}
+
 function renderKPIs(){
   const total = data.length;
   const up = data.filter(d=>d.inc>0).length;
   const down = data.filter(d=>d.inc<0).length;
   const mcLast = MARKETCAP[MARKETCAP.length-1][1];
-  const mcFirst = MARKETCAP[0][1];
-  const pct = ((mcLast-mcFirst)/mcFirst*100);
+  const pct1 = marketPctChange(1);
+  const pct3 = marketPctChange(3);
+  const pct7 = marketPctChange(7);
+  const kpi = (pct,label) => pct==null ? '' :
+    `<div class="kpi ${pct>=0?'up':'down'}"><span class="n tab">${pct>=0?'+':''}${pct.toFixed(1)}%</span><span class="l">${label}</span></div>`;
   const el = document.getElementById('kpis');
   el.innerHTML = `
     <div class="kpi"><span class="n tab">${total}</span><span class="l">Jugadores</span></div>
     <div class="kpi up"><span class="n tab">${up}</span><span class="l">Suben hoy</span></div>
     <div class="kpi down"><span class="n tab">${down}</span><span class="l">Bajan hoy</span></div>
-    <div class="kpi ${pct>=0?'up':'down'}"><span class="n tab">${pct>=0?'+':''}${pct.toFixed(1)}%</span><span class="l">Mercado 60d</span></div>
+    ${kpi(pct1,'Mercado 1d')}${kpi(pct3,'Mercado 3d')}${kpi(pct7,'Mercado 7d')}
   `;
-  document.getElementById('sparkLabel').innerHTML = `Valor total del mercado LaLiga: <b>${(mcLast/1e9).toFixed(2)} mil M€</b> — ${pct>=0?'subiendo':'bajando'} un ${Math.abs(pct).toFixed(1)}% en 60 días`;
+  const pctFor7 = pct7!=null ? pct7 : pct1;
+  document.getElementById('sparkLabel').innerHTML = `Valor total del mercado LaLiga: <b>${(mcLast/1e9).toFixed(2)} mil M€</b> — ${pctFor7>=0?'subiendo':'bajando'} un ${Math.abs(pctFor7).toFixed(1)}% en 7 días`;
 }
 
 function renderSpark(){
@@ -466,10 +482,16 @@ function renderSpark(){
 /* ---------- Chollos ---------- */
 function renderChollos(){
   const el = document.getElementById('chollos');
-  const list = data
-    .filter(d=>d.value!=null && d.status==='ok' && d.price>=300000 && d.role!=='Descarte')
-    .sort((a,b)=>b.value-a.value)
-    .slice(0,8);
+  let pool = data.filter(d=>d.value!=null && d.status==='ok' && d.price>=300000 && d.role!=='Descarte');
+  // Si tenemos el mercado de tu liga, los chollos se limitan a lo que hoy
+  // puedes realmente fichar (y por tanto se renuevan solos cada día según
+  // cambia el mercado); si no hay liga conectada, se muestra todo LaLiga.
+  if(HAS_LEAGUE_MARKET){
+    pool = pool.filter(d=>d.leagueFree || d.leagueForSale);
+    document.querySelector('#panel-chollos .hint').textContent =
+      'Mejor ratio puntos (25/26) por millón de euros, entre lo disponible ahora mismo en el mercado de tu liga';
+  }
+  const list = pool.sort((a,b)=>b.value-a.value).slice(0,16);
   el.innerHTML = list.map((d,i)=>`
     <div class="chollo-card">
       <span class="rank">${i+1}</span>
@@ -610,6 +632,37 @@ function pickScore(d){
   const prob = d.injuryProb!=null ? d.injuryProb/100 : 0.6;
   return d.value * roleWeight(d.role) * prob * fixtureWeight(d.nextDiff);
 }
+
+// Cuántos jugadores de rol Clave/Dios hay en cada posición en TODA LaLiga:
+// pocos alternativas -> los pocos que salen al mercado se pelean más (esto es
+// lo que hace que un portero o un central de puntuación alta sean más
+// disputados que un centrocampista igual de "clave", sin tener que
+// codificar posiciones a mano).
+const ELITE_ROLES = new Set(['Dios','Clave']);
+const eliteCountByPos = {};
+data.forEach(d=>{ if(ELITE_ROLES.has(d.role)) eliteCountByPos[d.pos] = (eliteCountByPos[d.pos]||0)+1; });
+
+function scarcityFactor(d){
+  if(!ELITE_ROLES.has(d.role)) return 1.0;
+  const eliteAtPos = eliteCountByPos[d.pos] || 1;
+  // Normalizado contra ~8 "elite" por posición como referencia de "no escaso".
+  const scarce = Math.max(0, 8 - eliteAtPos) / 8;
+  return 1 + scarce * 0.25; // hasta +25% cuando casi no hay alternativas
+}
+
+// El sobreprecio típico (BID_MULTIPLIER) es una media de toda la liga; esto
+// lo reparte según lo disputado que está CADA jugador en concreto, en vez de
+// aplicar el mismo % a todos por igual.
+function demandFactor(d){
+  const role = roleWeight(d.role); // 0.5..1.3, 1.0 = Rotación (referencia neutra)
+  const roleFactor = 1 + (role - 1) * 0.6;
+  // Titular fijo (>=70%) se paga casi toda la prima; suplente claro (<30%) se
+  // paga bastante menos porque puede no llegar a jugar. Sin dato, se asume
+  // titular habitual (la mayoría de jugadores sin duda ni lesión lo son).
+  const prob = d.injuryProb!=null ? d.injuryProb/100 : 0.75;
+  const probFactor = 0.75 + prob * 0.35;
+  return roleFactor * probFactor * scarcityFactor(d);
+}
 const PICKS_COLS = [
   {key:'rank', label:'#', sortable:false},
   {key:'name', label:'Jugador', sortable:true},
@@ -631,9 +684,10 @@ function buildPicksData(){
     // Base: valor de mercado real del jugador (no el precio pedido, que si lo
     // vende otro manager suele estar inflado) por el sobreprecio típico que de
     // verdad se paga en tu liga esta temporada (percentil 75 de las compras a
-    // la máquina, excluyendo fichajes de relleno <200k, no solo lo justo para
-    // ganar al segundo mejor postor).
-    const base = d.price * BID_MULTIPLIER;
+    // la máquina, excluyendo fichajes de relleno <200k), repartido según lo
+    // disputado que está ESTE jugador en concreto (rol, titularidad, escasez
+    // en su posición) en vez de aplicar el mismo % a todos por igual.
+    const base = d.price * BID_MULTIPLIER * demandFactor(d);
     // Si el precio ya está en subida, los rivales saben que recuperarán ese
     // dinero en un par de días y pujan contando con ello: sumamos ~2 días de
     // la tendencia actual.
@@ -662,14 +716,23 @@ function renderPicksHead(){
   });
 }
 
+function picksFilterPredicate(d){
+  const onlyMachine = document.getElementById('picksOnlyMachine').checked;
+  const onlyUsers = document.getElementById('picksOnlyUsers').checked;
+  if(onlyMachine && !onlyUsers) return d.leagueFree;
+  if(onlyUsers && !onlyMachine) return d.leagueForSale;
+  return true; // ninguno marcado (o los dos) -> todos
+}
+
 function renderPicksTable(){
   const body = document.getElementById('picksRows');
-  if(!picksData.length){
-    body.innerHTML = `<tr><td colspan="${PICKS_COLS.length}" class="empty">Hoy no hay nadie disponible en el mercado de tu liga.</td></tr>`;
+  const filtered = picksData.filter(picksFilterPredicate);
+  if(!filtered.length){
+    body.innerHTML = `<tr><td colspan="${PICKS_COLS.length}" class="empty">Hoy no hay nadie disponible con este filtro.</td></tr>`;
     return;
   }
   const k = picksState.sortKey, dir = picksState.sortDir;
-  const sorted = [...picksData].sort((a,b)=>{
+  const sorted = [...filtered].sort((a,b)=>{
     if(k==='role'){
       const ai = a.role ? ROLE_ORDER.indexOf(a.role) : ROLE_ORDER.length;
       const bi = b.role ? ROLE_ORDER.indexOf(b.role) : ROLE_ORDER.length;
@@ -707,6 +770,14 @@ function renderPicks(){
   buildPicksData();
   renderPicksHead();
   renderPicksTable();
+  document.getElementById('picksOnlyMachine').addEventListener('change', e=>{
+    if(e.target.checked) document.getElementById('picksOnlyUsers').checked = false;
+    renderPicksTable();
+  });
+  document.getElementById('picksOnlyUsers').addEventListener('change', e=>{
+    if(e.target.checked) document.getElementById('picksOnlyMachine').checked = false;
+    renderPicksTable();
+  });
 }
 
 /* ---------- Controls + table ---------- */
