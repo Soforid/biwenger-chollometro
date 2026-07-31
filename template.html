@@ -298,7 +298,6 @@ footer{margin-top:40px;padding-top:16px;border-top:1px solid var(--line);color:v
     <button class="tab-btn active" data-tab="chollos">Top chollos</button>
     <button class="tab-btn" data-tab="scatter">Mapa de valor</button>
     <button class="tab-btn" data-tab="rivals" id="tabRivalsBtn" style="display:none">Rivales</button>
-    <button class="tab-btn" data-tab="picks" id="tabPicksBtn" style="display:none">Fichajes recomendados</button>
     <button class="tab-btn" data-tab="players">Todos los jugadores</button>
   </div>
 
@@ -328,25 +327,6 @@ footer{margin-top:40px;padding-top:16px;border-top:1px solid var(--line);color:v
       <span class="hint">Saldo, plantilla y comportamiento de puja de los demás managers de tu liga</span>
     </div>
     <div class="rivals-grid" id="rivalsGrid"></div>
-  </div>
-
-  <div class="tab-panel" id="panel-picks" style="display:none">
-    <div class="section-head">
-      <h2>Fichajes recomendados</h2>
-      <span class="hint">Jugadores disponibles ahora mismo en el mercado de tu liga, puntuados por valor, rol, forma y calendario</span>
-    </div>
-    <div class="controls">
-      <label class="chk-wrap"><input class="chk" type="checkbox" id="picksOnlyMachine"> Solo mercado (máquina)</label>
-      <label class="chk-wrap"><input class="chk" type="checkbox" id="picksOnlyUsers"> Solo de otros managers</label>
-    </div>
-    <div class="table-scroll">
-      <table>
-        <thead>
-          <tr id="picksHeadRow"></tr>
-        </thead>
-        <tbody id="picksRows"></tbody>
-      </table>
-    </div>
   </div>
 
   <div class="tab-panel" id="panel-players" style="display:none">
@@ -614,7 +594,7 @@ function renderRivals(){
   }).join('');
 }
 
-/* ---------- Fichajes recomendados ---------- */
+/* ---------- Puja sugerida (mercado de tu liga) ---------- */
 function roleWeight(role){
   const w = {'Dios':1.3,'Clave':1.2,'Importante':1.1,'Rotación':1.0,'Revulsivo':0.9,'Reserva':0.75,'Descarte':0.5};
   return role ? (w[role]||1.0) : 1.0;
@@ -660,23 +640,15 @@ function demandRatio(d){
   const posMedian = BID_MEDIAN_BY_POS[d.pos] ?? BID_MEDIAN_BY_POS[3] ?? 1.10;
   return posMedian + roleProb01(d) * BID_SPREAD;
 }
-const PICKS_COLS = [
-  {key:'rank', label:'#', sortable:false},
-  {key:'name', label:'Jugador', sortable:true},
-  {key:'pos', label:'Pos', sortable:true},
-  {key:'role', label:'Rol', sortable:true},
-  {key:'injuryProb', label:'% Titular', sortable:true},
-  {key:'nextDiff', label:'Próx. rival', sortable:true},
-  {key:'askPrice', label:'Precio pedido', sortable:true},
-  {key:'suggested', label:'Puja sugerida', sortable:true},
-  {key:'seller', label:'Vendedor', sortable:true},
-  {key:'score', label:'Puntuación', sortable:true},
-];
-const picksState = {sortKey:'score', sortDir:-1};
-let picksData = [];
-
-function buildPicksData(){
-  picksData = data.filter(d=> d.leagueFree || d.leagueForSale).map(d=>{
+// Fusionado dentro de "Todos los jugadores": estos campos se calculan para
+// todo jugador disponible en el mercado de tu liga (el resto se quedan a
+// null) y se muestran como columnas extra cuando activas ese filtro.
+function augmentMarketFields(){
+  data.forEach(d=>{
+    if(!(d.leagueFree || d.leagueForSale)){
+      d.askPrice = d.suggested = d.seller = d.score = null;
+      return;
+    }
     const askPrice = d.salePrice!=null ? d.salePrice : d.price;
     // Base: valor de mercado real del jugador (no el precio pedido, que si lo
     // vende otro manager suele estar inflado) por el sobreprecio que de
@@ -689,98 +661,17 @@ function buildPicksData(){
     // dinero en un par de días y pujan contando con ello: sumamos ~2 días de
     // la tendencia actual.
     const momentum = d.inc > 0 ? d.inc * 2 : 0;
-    const suggested = Math.max(Math.round((base + momentum) / 1000) * 1000, askPrice);
-    const seller = d.leagueForSale ? (d.saleSeller||'?') : 'Máquina';
-    return {...d, askPrice, suggested, seller, score: pickScore(d)};
-  });
-}
-
-function renderPicksHead(){
-  const row = document.getElementById('picksHeadRow');
-  row.innerHTML = PICKS_COLS.map(c=>{
-    const sorted = picksState.sortKey===c.key;
-    const arrow = sorted ? (picksState.sortDir===1?'▲':'▼') : '';
-    return `<th data-key="${c.key}" class="${sorted?'sorted':''}">${c.label}${c.sortable?`<span class="arrow">${arrow}</span>`:''}</th>`;
-  }).join('');
-  row.querySelectorAll('th').forEach(th=>{
-    const key = th.dataset.key;
-    if(!PICKS_COLS.find(c=>c.key===key).sortable) return;
-    th.addEventListener('click', ()=>{
-      if(picksState.sortKey===key){ picksState.sortDir*=-1; }
-      else { picksState.sortKey=key; picksState.sortDir = (key==='name'||key==='seller')?1:-1; }
-      renderPicksHead(); renderPicksTable();
-    });
-  });
-}
-
-function picksFilterPredicate(d){
-  const onlyMachine = document.getElementById('picksOnlyMachine').checked;
-  const onlyUsers = document.getElementById('picksOnlyUsers').checked;
-  if(onlyMachine && !onlyUsers) return d.leagueFree;
-  if(onlyUsers && !onlyMachine) return d.leagueForSale;
-  return true; // ninguno marcado (o los dos) -> todos
-}
-
-function renderPicksTable(){
-  const body = document.getElementById('picksRows');
-  const filtered = picksData.filter(picksFilterPredicate);
-  if(!filtered.length){
-    body.innerHTML = `<tr><td colspan="${PICKS_COLS.length}" class="empty">Hoy no hay nadie disponible con este filtro.</td></tr>`;
-    return;
-  }
-  const k = picksState.sortKey, dir = picksState.sortDir;
-  const sorted = [...filtered].sort((a,b)=>{
-    if(k==='role'){
-      const ai = a.role ? ROLE_ORDER.indexOf(a.role) : ROLE_ORDER.length;
-      const bi = b.role ? ROLE_ORDER.indexOf(b.role) : ROLE_ORDER.length;
-      return (ai-bi)*dir;
-    }
-    let av=a[k], bv=b[k];
-    if(av==null) av = (dir===1? Infinity : -Infinity);
-    if(bv==null) bv = (dir===1? Infinity : -Infinity);
-    if(typeof av==='string') return av.localeCompare(bv,'es')*dir;
-    return (av-bv)*dir;
-  });
-  body.innerHTML = sorted.map((d,i)=>{
-    const nd = diffBucket(d.nextDiff);
-    const roleHtml = d.role ? `<span class="role-chip ${ROLE_CLASS[d.role]||''}">${d.role}</span>` : `<span class="role-none">—</span>`;
-    const probHtml = d.injuryProb!=null
-      ? `<span class="prob-chip ${d.injuryProb>=70?'prob-high':d.injuryProb>=40?'prob-mid':'prob-low'} tab">${d.injuryProb}%</span>`
-      : `<span class="role-none">—</span>`;
-    return `<tr>
-      <td class="tab" style="color:var(--ink-dim)">${i+1}</td>
-      <td><div class="pname">${d.name}</div><div class="pteam">${d.team}</div></td>
-      <td><span class="pos-chip pos-${d.pos}">${POS_LABEL[d.pos]}</span></td>
-      <td>${roleHtml}</td>
-      <td>${probHtml}</td>
-      <td><span class="diff-chip ${nd.cls}">${nd.label}</span></td>
-      <td class="tab">${euros(d.askPrice)}</td>
-      <td class="tab" style="color:var(--accent);font-weight:700">${euros(d.suggested)}</td>
-      <td class="pteam">${d.seller}</td>
-    </tr>`;
-  }).join('');
-}
-
-function renderPicks(){
-  if(!HAS_LEAGUE_MARKET) return;
-  document.getElementById('tabPicksBtn').style.display = '';
-  buildPicksData();
-  renderPicksHead();
-  renderPicksTable();
-  document.getElementById('picksOnlyMachine').addEventListener('change', e=>{
-    if(e.target.checked) document.getElementById('picksOnlyUsers').checked = false;
-    renderPicksTable();
-  });
-  document.getElementById('picksOnlyUsers').addEventListener('change', e=>{
-    if(e.target.checked) document.getElementById('picksOnlyMachine').checked = false;
-    renderPicksTable();
+    d.askPrice = askPrice;
+    d.suggested = Math.max(Math.round((base + momentum) / 1000) * 1000, askPrice);
+    d.seller = d.leagueForSale ? (d.saleSeller||'?') : 'Máquina';
+    d.score = pickScore(d);
   });
 }
 
 /* ---------- Controls + table ---------- */
 const state = {search:'', pos:'all', team:'all', role:'all', onlyLeagueMarket:false, leagueMarketMode:'all', sortKey:'value', sortDir:-1};
 
-const COLS = [
+const BASE_COLS = [
   {key:'rank', label:'#', sortable:false},
   {key:'name', label:'Jugador', sortable:true},
   {key:'pos', label:'Pos', sortable:true},
@@ -793,19 +684,32 @@ const COLS = [
   {key:'injuryProb', label:'% Titular', sortable:true},
   {key:'status', label:'Estado', sortable:false},
 ];
+// Solo tienen sentido para jugadores del mercado de tu liga, así que solo se
+// añaden a la tabla cuando ese filtro está activo (si no, la mayoría de las
+// 547 filas saldrían vacías).
+const MARKET_COLS = [
+  {key:'askPrice', label:'Precio pedido', sortable:true},
+  {key:'suggested', label:'Puja sugerida', sortable:true},
+  {key:'seller', label:'Vendedor', sortable:true},
+  {key:'score', label:'Puntuación', sortable:true},
+];
+function getCols(){
+  return state.onlyLeagueMarket ? [...BASE_COLS, ...MARKET_COLS] : BASE_COLS;
+}
 
 function renderHead(){
   const row = document.getElementById('headRow');
-  row.innerHTML = COLS.map(c=>{
+  const cols = getCols();
+  row.innerHTML = cols.map(c=>{
     const sorted = state.sortKey===c.key;
     const arrow = sorted ? (state.sortDir===1?'▲':'▼') : '';
     return `<th data-key="${c.key}" class="${sorted?'sorted':''}">${c.label}${c.sortable?`<span class="arrow">${arrow}</span>`:''}</th>`;
   }).join('');
   row.querySelectorAll('th').forEach(th=>{
     const key = th.dataset.key;
-    if(!COLS.find(c=>c.key===key).sortable) return;
+    if(!cols.find(c=>c.key===key).sortable) return;
     th.addEventListener('click',()=>{
-      if(state.sortKey===key){ state.sortDir*=-1; } else { state.sortKey=key; state.sortDir = key==='name'?1:-1; }
+      if(state.sortKey===key){ state.sortDir*=-1; } else { state.sortKey=key; state.sortDir = (key==='name'||key==='seller')?1:-1; }
       renderHead(); renderTable();
     });
   });
@@ -868,8 +772,9 @@ function renderTable(){
   const list = filteredSorted();
   document.getElementById('countHint').textContent = `${list.length} de ${data.length} jugadores`;
   const body = document.getElementById('rows');
+  const showMarketCols = state.onlyLeagueMarket;
   if(!list.length){
-    body.innerHTML = `<tr><td colspan="${COLS.length}" class="empty">Sin resultados. Prueba a cambiar los filtros.</td></tr>`;
+    body.innerHTML = `<tr><td colspan="${getCols().length}" class="empty">Sin resultados. Prueba a cambiar los filtros.</td></tr>`;
     return;
   }
   const maxValue = Math.max(...list.filter(d=>d.value!=null).map(d=>d.value), 1);
@@ -908,6 +813,12 @@ function renderTable(){
       marketBadge = `<span class="market-badge market-forsale" title="En venta por ${d.saleSeller||'?'} · ${euros(d.salePrice||0)} · finaliza ${untilTxt}">En venta</span>`;
     }
 
+    const marketCells = !showMarketCols ? '' : `
+      <td class="tab">${d.askPrice==null?'—':euros(d.askPrice)}</td>
+      <td class="tab" style="color:var(--accent);font-weight:700">${d.suggested==null?'—':euros(d.suggested)}</td>
+      <td class="pteam">${d.seller||'—'}</td>
+      <td class="tab">${d.score==null?'—':d.score.toFixed(0)}</td>`;
+
     return `<tr>
       <td class="tab" style="color:var(--ink-dim)">${i+1}</td>
       <td><div class="pname">${d.name}${marketBadge}</div><div class="pteam">${d.team}</div></td>
@@ -919,7 +830,7 @@ function renderTable(){
       <td><div class="value-cell"><span class="tab">${d.value==null?'—':d.value.toFixed(0)}</span>${d.value!=null?`<span class="value-bar"><i style="width:${valuePct}%"></i></span>`:''}</div></td>
       <td><span class="diff-chip ${nd.cls}">${nd.label}</span></td>
       <td>${probHtml}</td>
-      <td>${statusHtml}</td>
+      <td>${statusHtml}</td>${marketCells}
     </tr>`;
   }).join('');
 }
@@ -938,12 +849,13 @@ document.querySelectorAll('.tab-btn').forEach(b=>{
 document.getElementById('search').addEventListener('input', e=>{ state.search=e.target.value; renderTable(); });
 
 if(HAS_LEAGUE_MARKET){
+  augmentMarketFields();
   document.getElementById('onlyLeagueMarketWrap').style.display = '';
   const modeSel = document.getElementById('leagueMarketMode');
   document.getElementById('onlyLeagueMarket').addEventListener('change', e=>{
     state.onlyLeagueMarket = e.target.checked;
     modeSel.style.display = e.target.checked ? '' : 'none';
-    renderTable();
+    renderHead(); renderTable();
   });
   modeSel.addEventListener('change', e=>{ state.leagueMarketMode = e.target.value; renderTable(); });
 }
@@ -952,7 +864,6 @@ renderKPIs();
 renderSpark();
 renderChollos();
 renderRivals();
-renderPicks();
 renderScatter();
 bindScatterTooltip();
 renderLegend();
