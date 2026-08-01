@@ -117,6 +117,12 @@ def fetch_league_money(token, league_id, player_names, player_prices, player_pos
     # the 'bids' array of listings someone else won) - both are a proxy for
     # how active/aggressive a manager is in the market.
     bid_stats = {uid: {"wins": 0, "losses": 0, "lastLossAmount": []} for uid in users}
+    # A market win can later get undone by an admin (adminTransfer removing
+    # that same player from that same buyer, e.g. a league correction) - the
+    # buyer never really keeps the "win" in that case, so track both sets and
+    # net them out after the full pass instead of counting them live.
+    market_wins = set()  # {(buyer_id, player_id)}
+    admin_reversals = set()  # {(from_id, player_id)}
     # winning_amount / the player's CURRENT general market value, for free-agent
     # (machine-pool) signings this season. This is what "puja sugerida" is based
     # on: not how much the winner beat the runner-up by (that undersells early
@@ -163,6 +169,7 @@ def fetch_league_money(token, league_id, player_names, player_prices, player_pos
                         balances[seller_id] += amount
                     if buyer_id in bid_stats:
                         bid_stats[buyer_id]["wins"] += 1
+                        market_wins.add((buyer_id, c.get("player")))
                     bids = c.get("bids", [])
                     for b in bids:
                         bidder = str((b.get("user") or {}).get("id") or "")
@@ -187,6 +194,8 @@ def fetch_league_money(token, league_id, player_names, player_prices, player_pos
                     frm_id = str(frm["id"]) if frm else None
                     if frm_id in balances:
                         balances[frm_id] += c.get("amount", 0)
+                    if frm_id:
+                        admin_reversals.add((frm_id, c.get("player")))
             elif item["type"] == "transfer":
                 # Sale, either to the market ("machine" - only 'from') or
                 # directly to another manager (both 'from' and 'to').
@@ -217,6 +226,12 @@ def fetch_league_money(token, league_id, player_names, player_prices, player_pos
 
     if unhandled_types:
         print(f"  -> WARNING: unhandled board event types (money not accounted for): {sorted(unhandled_types)}")
+
+    reversed_wins = market_wins & admin_reversals
+    for buyer_id, _pid in reversed_wins:
+        bid_stats[buyer_id]["wins"] = max(0, bid_stats[buyer_id]["wins"] - 1)
+    if reversed_wins:
+        print(f"  -> {len(reversed_wins)} fichaje(s) ganado(s) en mercado luego revertido(s) por un admin - no cuentan como 'ganada'")
 
     team_rows = sorted(([uid, users[uid], balances[uid]] for uid in users), key=lambda r: -r[2])
     transfers.sort(key=lambda t: -t[0])
@@ -316,6 +331,12 @@ def main():
             "id": p["id"], "name": p["name"], "team": team_name, "nextDiff": next_diff,
             "pos": p["position"], "price": p["price"], "inc": p["priceIncrement"],
             "ptsLS": p.get("pointsLastSeason"), "status": p["status"],
+            "pts": p.get("points", 0),
+            # Per-matchday recent form - empty until the season actually kicks
+            # off and Biwenger starts populating it. Passed through as-is
+            # (shape unverified against real match data yet) for the "racha
+            # de los últimos 5 partidos" in the roster modal.
+            "fitness": p.get("fitness") or [],
         })
     vals = biw_market["values"][-60:]
     mc_line = json.dumps(vals, separators=(",", ":"))
@@ -430,6 +451,7 @@ def main():
 
     print("[6/9] Fetching league money, market and rivals (Biwenger, read-only)...")
     rivals_json = "[]"
+    rosters_json = "{}"
     market = {}
     bid_median_by_pos = {1: 1.10, 2: 1.10, 3: 1.10, 4: 1.10, 5: 1.10}
     bid_spread = 0.15
@@ -463,17 +485,21 @@ def main():
                     balance = next((b for u, n, b in league_data["team_rows"] if u == uid), 0)
                     pos_counts = [0, 0, 0, 0, 0]  # POR,DEF,CEN,DEL,ENT
                     roster_value = 0
+                    roster_value_change = 0  # suma de lo que ha subido/bajado hoy cada jugador de la plantilla
                     for pid in league_data["rosters"].get(uid, []):
                         pos = pos_by_id.get(pid)
                         if pos and 1 <= pos <= 5:
                             pos_counts[pos - 1] += 1
                         roster_value += players_by_id.get(pid, {}).get("price", 0) or 0
+                        roster_value_change += players_by_id.get(pid, {}).get("inc", 0) or 0
                     stats = league_data["bid_stats"].get(uid, {"wins": 0, "losses": 0})
                     pending = pending_by_seller.get(name, 0)
                     rivals.append([uid, name, balance, pending, roster_value,
-                                    *pos_counts, sum(pos_counts), stats["wins"], stats["losses"]])
+                                    *pos_counts, sum(pos_counts), stats["wins"], stats["losses"],
+                                    roster_value_change])
                 rivals.sort(key=lambda r: -r[2])
                 rivals_json = json.dumps(rivals, ensure_ascii=False, separators=(",", ":"))
+                rosters_json = json.dumps(league_data["rosters"], ensure_ascii=False, separators=(",", ":"))
             else:
                 print("  -> league not found for this token, skipping")
         except Exception as e:
@@ -520,6 +546,7 @@ def main():
             p["id"], p["name"], p["team"], p["pos"], p["price"], p["inc"], p["ptsLS"], p["status"],
             p["nextDiff"], role, injury_txt, days_txt, grav_v, status_txt, prob_v,
             league_free, league_forsale, sale_price, sale_seller, sale_until,
+            p["pts"], p["fitness"],
         ])
     players_json = json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
     print(f"  -> role matches: {role_matches} / injury matches: {inj_matches} / lineup probability matches: {lineup_prob_matches}")
@@ -534,6 +561,7 @@ def main():
             .replace("__FONT600__", font600)
             .replace("__FONT700__", font700)
             .replace("__RIVALS__", rivals_json)
+            .replace("__ROSTERS__", rosters_json)
             .replace("__BID_MEDIAN_BY_POS__", json.dumps({str(k): v for k, v in bid_median_by_pos.items()}))
             .replace("__BID_SPREAD__", json.dumps(round(bid_spread, 3))))
     out_path = ROOT / "biwenger.html"

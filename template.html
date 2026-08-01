@@ -161,17 +161,43 @@ a{color:inherit;}
 
 /* ---- rivals ---- */
 .rivals-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px;}
-.rival-card{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:14px 16px;box-shadow:var(--shadow);display:flex;flex-direction:column;gap:10px;}
+.rival-card{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:14px 16px;box-shadow:var(--shadow);display:flex;flex-direction:column;gap:10px;cursor:pointer;transition:border-color .15s;}
+.rival-card:hover{border-color:var(--accent);}
 .rival-top{display:flex;justify-content:space-between;align-items:flex-start;gap:8px;}
 .rival-name{font-weight:700;font-size:14.5px;}
 .rival-balance-col{display:flex;flex-direction:column;align-items:flex-end;gap:1px;}
 .rival-balance{font-family:'Oswald',sans-serif;font-weight:700;font-size:17px;}
 .rival-pending{font-size:11px;color:var(--ink-dim);cursor:default;}
+.rival-value-change{font-size:11px;cursor:default;}
+.rival-value-up{color:var(--rise);}
+.rival-value-down{color:var(--fall);}
 .rival-squad{display:flex;gap:6px;flex-wrap:wrap;}
 .rival-pos{font-size:11px;padding:2px 7px;border-radius:6px;background:var(--surface-2);color:var(--ink-dim);font-variant-numeric:tabular-nums;}
 .rival-pos b{color:var(--ink);}
 .rival-record{font-size:11.5px;color:var(--ink-dim);border-top:1px solid var(--line);padding-top:8px;display:flex;justify-content:space-between;}
 .rival-record b{color:var(--ink);}
+
+/* ---- roster modal ---- */
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:100;display:none;align-items:flex-start;justify-content:center;padding:5vh 16px;overflow-y:auto;}
+.modal-card{background:var(--surface);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);max-width:720px;width:100%;padding:20px 22px 26px;position:relative;}
+.modal-close{position:absolute;top:14px;right:14px;width:28px;height:28px;border-radius:8px;border:1px solid var(--line);background:var(--surface-2);color:var(--ink-dim);cursor:pointer;font-size:16px;line-height:1;}
+.modal-close:hover{color:var(--ink);}
+.roster-modal-head h2{margin:0 0 2px;font-size:22px;color:var(--ink);}
+.roster-modal-head .hint{color:var(--ink-dim);font-size:12.5px;}
+.roster-cols-head{display:grid;grid-template-columns:1fr 74px 66px 60px 96px 90px;gap:8px;padding:14px 0 4px;font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-dim);}
+.roster-group h3{margin:14px 0 4px;font-size:12.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--accent);border-top:1px solid var(--line);padding-top:10px;}
+.roster-group:first-child h3{border-top:none;padding-top:0;margin-top:6px;}
+.roster-group-count{color:var(--ink-dim);font-weight:400;text-transform:none;letter-spacing:0;}
+.roster-row{display:grid;grid-template-columns:1fr 74px 66px 60px 96px 90px;gap:8px;align-items:center;padding:6px 0;border-top:1px solid var(--line);}
+.roster-row:first-of-type{border-top:none;}
+.roster-cell{font-size:12px;}
+.streak-row{display:flex;gap:3px;}
+.streak-box{width:14px;height:14px;border-radius:4px;background:var(--surface-2);}
+.streak-none{background:var(--surface-2);}
+.streak-neg{background:var(--fall);}
+.streak-low{background:var(--accent);}
+.streak-high{background:var(--gk);}
+.streak-mid{background:var(--rise);}
 
 /* ---- scatter ---- */
 .scatter-card{background:var(--surface);border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow);padding:16px 18px 10px;position:relative;}
@@ -287,9 +313,7 @@ footer{margin-top:40px;padding-top:16px;border-top:1px solid var(--line);color:v
 <div class="masthead">
   <div class="masthead-inner">
     <div class="brand">
-      <span class="eyebrow">LaLiga · Pretemporada 2026/27</span>
       <h1>Chollómetro</h1>
-      <p>Mercado de Biwenger cruzado con las jerarquías y el parte médico de FutbolFantasy: precio, puntos de la temporada pasada, rol en el equipo y lesiones, para encontrar chollos antes de que empiece la liga.</p>
       <button class="refresh-btn" id="refreshBtn" type="button">↻ Actualizar datos</button>
       <span class="refresh-toast" id="refreshToast"></span>
     </div>
@@ -336,6 +360,14 @@ footer{margin-top:40px;padding-top:16px;border-top:1px solid var(--line);color:v
       <span class="hint">Saldo, plantilla y comportamiento de puja de los demás managers de tu liga</span>
     </div>
     <div class="rivals-grid" id="rivalsGrid"></div>
+    <span class="hint">Haz clic en un rival para ver su plantilla</span>
+  </div>
+
+  <div class="modal-overlay" id="rosterModalOverlay">
+    <div class="modal-card">
+      <button class="modal-close" id="rosterModalClose" type="button">×</button>
+      <div id="rosterModalContent"></div>
+    </div>
   </div>
 
   <div class="tab-panel" id="panel-players" style="display:none">
@@ -372,9 +404,10 @@ footer{margin-top:40px;padding-top:16px;border-top:1px solid var(--line);color:v
 </div>
 
 <script>
-const PLAYERS = __PLAYERS__; // [id,name,team,pos,price,inc,ptsLS,status,nextDiff,role,injuryTxt,injuryDays,injuryGrav,injuryStatusTxt,injuryProb,leagueFree,leagueForSale,salePrice,saleSeller,saleUntil]
+const PLAYERS = __PLAYERS__; // [id,name,team,pos,price,inc,ptsLS,status,nextDiff,role,injuryTxt,injuryDays,injuryGrav,injuryStatusTxt,injuryProb,leagueFree,leagueForSale,salePrice,saleSeller,saleUntil,pts,fitness]
 const MARKETCAP = __MARKETCAP__; // [[yymmdd,value],...]
-const RIVALS = __RIVALS__; // [[userId,name,balance,pendingFromListings,rosterValue,por,def,cen,del,ent,squadSize,wins,losses],...] sorted desc by balance
+const RIVALS = __RIVALS__; // [[userId,name,balance,pendingFromListings,rosterValue,por,def,cen,del,ent,squadSize,wins,losses,rosterValueChange],...] sorted desc by balance
+const ROSTERS = __ROSTERS__; // {userId: [playerId,...]}
 const BID_MEDIAN_BY_POS = __BID_MEDIAN_BY_POS__; // {"1":1.08,"2":1.14,...} real median winning_amount/value per position this season (POR/DEF/CEN/DEL/ENT), excluding sub-200k filler buys
 const BID_SPREAD = __BID_SPREAD__; // p75-minus-median gap of this season's purchases: how much further a genuinely contested listing goes, on top of its position's median
 
@@ -395,11 +428,12 @@ const normalize = s => (s||'').toString().trim().toLowerCase()
   .normalize('NFD').replace(/[̀-ͯ]/g,'');
 
 const data = PLAYERS.map(p=>{
-  const [id,name,team,pos,price,inc,ptsLS,status,nextDiff,role,injuryTxt,injuryDays,injuryGrav,injuryStatusTxt,injuryProb,leagueFree,leagueForSale,salePrice,saleSeller,saleUntil]=p;
+  const [id,name,team,pos,price,inc,ptsLS,status,nextDiff,role,injuryTxt,injuryDays,injuryGrav,injuryStatusTxt,injuryProb,leagueFree,leagueForSale,salePrice,saleSeller,saleUntil,pts,fitness]=p;
   const value = (ptsLS!=null && ptsLS>0 && price>0) ? ptsLS/(price/1e6) : null;
-  return {id,name,team,pos,price,inc,ptsLS,status,nextDiff,value,role,injuryTxt,injuryDays,injuryGrav,injuryStatusTxt,injuryProb,leagueFree,leagueForSale,salePrice,saleSeller,saleUntil,
+  return {id,name,team,pos,price,inc,ptsLS,status,nextDiff,value,role,injuryTxt,injuryDays,injuryGrav,injuryStatusTxt,injuryProb,leagueFree,leagueForSale,salePrice,saleSeller,saleUntil,pts,fitness,
     nameNorm: normalize(name), teamNorm: normalize(team)};
 });
+const dataById = new Map(data.map(d=>[d.id,d]));
 const HAS_LEAGUE_MARKET = data.some(d=>d.leagueFree || d.leagueForSale);
 
 function diffBucket(nd){
@@ -580,17 +614,21 @@ function renderRivals(){
   document.getElementById('tabRivalsBtn').style.display = '';
   const grid = document.getElementById('rivalsGrid');
   const posLabels = ['POR','DEF','CEN','DEL','ENT'];
-  grid.innerHTML = RIVALS.map(([id,name,balance,pending,rosterValue,por,def,cen,del,ent,squadSize,wins,losses])=>{
+  grid.innerHTML = RIVALS.map(([id,name,balance,pending,rosterValue,por,def,cen,del,ent,squadSize,wins,losses,rosterValueChange])=>{
     const counts = [por,def,cen,del,ent];
     const squadHtml = posLabels.map((lbl,i)=>`<span class="rival-pos">${lbl} <b>${counts[i]}</b></span>`).join('');
     const pendingHtml = pending>0
       ? `<span class="rival-pending" title="Saldo si se completan las ventas que tiene puestas en el mercado ahora mismo">(${euros(balance+pending)})</span>`
       : '';
-    return `<div class="rival-card">
+    const valueChangeHtml = (squadSize>0 && rosterValueChange)
+      ? `<span class="rival-value-change ${rosterValueChange>=0?'rival-value-up':'rival-value-down'}" title="Cambio en el valor de mercado de su plantilla respecto a ayer">(${rosterValueChange>=0?'+':''}${eurosShort(rosterValueChange)})</span>`
+      : '';
+    return `<div class="rival-card" data-uid="${id}" data-name="${name.replace(/"/g,'&quot;')}">
       <div class="rival-top">
         <span class="rival-name">${name}</span>
         <div class="rival-balance-col">
           <span class="rival-balance">${euros(balance)}</span>
+          ${valueChangeHtml}
           ${pendingHtml}
         </div>
       </div>
@@ -601,7 +639,93 @@ function renderRivals(){
       </div>
     </div>`;
   }).join('');
+  grid.querySelectorAll('.rival-card').forEach(card=>{
+    card.addEventListener('click', ()=> openRosterModal(card.dataset.uid, card.dataset.name));
+  });
 }
+
+/* ---------- Roster modal ---------- */
+function renderStreak(fitness){
+  // "fitness" viene tal cual de la API de Biwenger sin confirmar su forma
+  // exacta con datos reales (la temporada aún no ha empezado y ahora mismo
+  // está vacío para todos) - se interpreta de forma defensiva y, si no
+  // encaja o faltan partidos, se pinta como "no disputado".
+  const last5 = Array.isArray(fitness) ? fitness.slice(0,5) : [];
+  const boxes = [];
+  for(let i=0;i<5;i++){
+    const m = last5[i];
+    let cls='streak-none', title='No disputado';
+    const pts = m && typeof m.points==='number' ? m.points : (m && typeof m.p==='number' ? m.p : null);
+    if(pts!=null){
+      if(pts<0){cls='streak-neg';title=`${pts} pts`;}
+      else if(pts<=5){cls='streak-low';title=`${pts} pts`;}
+      else if(pts<=9){cls='streak-mid';title=`${pts} pts`;}
+      else {cls='streak-high';title=`${pts} pts`;}
+    }
+    boxes.push(`<span class="streak-box ${cls}" title="${title}"></span>`);
+  }
+  return `<div class="streak-row">${boxes.join('')}</div>`;
+}
+
+function buildRosterModal(uid, name){
+  const pids = ROSTERS[uid] || [];
+  const players = pids.map(pid=>dataById.get(pid)).filter(Boolean);
+  const rosterValue = players.reduce((s,p)=>s+(p.price||0),0);
+  const groups = [1,2,3,4,5].map(pos=>({
+    pos, label: POS_NAME[pos],
+    list: players.filter(p=>p.pos===pos).sort((a,b)=>(b.price||0)-(a.price||0)),
+  })).filter(g=>g.list.length);
+
+  const body = groups.length ? groups.map(g=>`
+    <div class="roster-group">
+      <h3>${g.label} <span class="roster-group-count">${g.list.length}</span></h3>
+      ${g.list.map(p=>{
+        const trendCls = p.inc>0?'up':p.inc<0?'down':'flat';
+        const trendArrow = p.inc>0?'▲':p.inc<0?'▼':'—';
+        const trendTxt = !p.inc ? '—' : `${trendArrow} ${eurosShort(Math.abs(p.inc))}`;
+        let statusHtml;
+        if(p.injuryStatusTxt){
+          const sevCls = p.injuryGrav!=null ? `sev-${p.injuryGrav}` : '';
+          statusHtml = `<span class="status-chip ${sevCls}">${p.injuryStatusTxt}</span>`;
+        } else if(p.status==='ok'){
+          statusHtml = `<span class="status-ok">Disponible</span>`;
+        } else {
+          statusHtml = `<span class="status-chip">${STATUS_LABEL[p.status]||p.status}</span>`;
+        }
+        return `<div class="roster-row">
+          <div class="roster-player"><div class="pname">${p.name}</div><div class="pteam">${p.team}</div></div>
+          <div class="roster-cell tab">${euros(p.price)}</div>
+          <div class="roster-cell tab trend ${trendCls}">${trendTxt}</div>
+          <div class="roster-cell tab">${p.pts||0}</div>
+          <div class="roster-cell">${statusHtml}</div>
+          <div class="roster-cell">${renderStreak(p.fitness)}</div>
+        </div>`;
+      }).join('')}
+    </div>
+  `).join('') : `<p class="empty">Sin jugadores en plantilla.</p>`;
+
+  return `
+    <div class="roster-modal-head">
+      <h2>${name}</h2>
+      <span class="hint">${players.length} jugadores · valor total ${euros(rosterValue)}</span>
+    </div>
+    ${groups.length ? `<div class="roster-cols-head"><span></span><span>Valor</span><span>Hoy</span><span>Puntos</span><span>Estado</span><span>Últimos 5</span></div>` : ''}
+    ${body}
+  `;
+}
+
+function openRosterModal(uid, name){
+  document.getElementById('rosterModalContent').innerHTML = buildRosterModal(uid, name);
+  document.getElementById('rosterModalOverlay').style.display = 'flex';
+}
+function closeRosterModal(){
+  document.getElementById('rosterModalOverlay').style.display = 'none';
+}
+document.getElementById('rosterModalClose').addEventListener('click', closeRosterModal);
+document.getElementById('rosterModalOverlay').addEventListener('click', e=>{
+  if(e.target.id==='rosterModalOverlay') closeRosterModal();
+});
+document.addEventListener('keydown', e=>{ if(e.key==='Escape') closeRosterModal(); });
 
 /* ---------- Puja sugerida (mercado de tu liga) ---------- */
 function roleWeight(role){
