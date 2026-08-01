@@ -114,6 +114,13 @@ a{color:inherit;}
 }
 .brand h1{font-size:34px;margin:0;line-height:1;color:var(--ink);}
 .brand p{margin:2px 0 0;color:var(--ink-dim);font-size:13px;max-width:46ch;}
+.refresh-btn{
+  align-self:flex-start;margin-top:8px;padding:7px 14px;border-radius:8px;border:1px solid var(--accent);
+  background:transparent;color:var(--accent);font-family:'Oswald',sans-serif;font-weight:600;font-size:12.5px;
+  letter-spacing:.03em;cursor:pointer;transition:background .15s,color .15s;
+}
+.refresh-btn:hover{background:var(--accent);color:var(--accent-ink);}
+.refresh-toast{display:block;margin-top:6px;font-size:12px;color:var(--ink-dim);max-width:52ch;min-height:1.4em;}
 
 .kpis{display:flex;gap:0;flex-wrap:wrap;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--surface);box-shadow:var(--shadow);}
 .kpi{padding:10px 18px;min-width:118px;border-right:1px solid var(--line);}
@@ -283,6 +290,8 @@ footer{margin-top:40px;padding-top:16px;border-top:1px solid var(--line);color:v
       <span class="eyebrow">LaLiga · Pretemporada 2026/27</span>
       <h1>Chollómetro</h1>
       <p>Mercado de Biwenger cruzado con las jerarquías y el parte médico de FutbolFantasy: precio, puntos de la temporada pasada, rol en el equipo y lesiones, para encontrar chollos antes de que empiece la liga.</p>
+      <button class="refresh-btn" id="refreshBtn" type="button">↻ Actualizar datos</button>
+      <span class="refresh-toast" id="refreshToast"></span>
     </div>
     <div class="kpis" id="kpis"></div>
   </div>
@@ -892,6 +901,26 @@ function switchTab(name){
 }
 document.querySelectorAll('.tab-btn').forEach(b=>{
   b.addEventListener('click', ()=> switchTab(b.dataset.tab));
+});
+
+/* ---------- Actualizar (botón manual) ---------- */
+// Esta página es HTML estático publicado: no puede ejecutar por sí sola el
+// pipeline en Python que raspa Biwenger/FutbolFantasy (necesita tu token,
+// y ese token no puede vivir en el código fuente de una página pública).
+// Lo que sí puede hacer es copiarte el mensaje exacto para pedirle a
+// cualquier Claude (móvil, otro ordenador, lo que tengas a mano) que lo
+// ejecute y vuelva a publicar aquí mismo, sin depender de este ordenador
+// ni de que el refresco automático diario haya llegado a tiempo.
+const REFRESH_PROMPT = `Actualiza el Chollómetro de Biwenger: clona y ejecuta el pipeline de https://github.com/Soforid/biwenger-chollometro (python3 update.py desde la raíz del repo, no necesita pip install). Si quiero también los datos de mi liga (Rivales, Fichajes recomendados, pujas sugeridas), te paso mi token de Biwenger como variable de entorno BIWENGER_TOKEN junto con BIWENGER_LEAGUE_ID=709656 -pídemelo si no te lo he dado ya en este chat-; si no, publica igualmente solo con la parte general de LaLiga. Cuando termine, publica biwenger.html con la herramienta Artifact usando exactamente esta URL para que el enlace no cambie: https://claude.ai/code/artifact/2d8d1729-77db-4e66-b7f3-2bc2dc83b971 (title="Chollómetro — Mercado Biwenger", favicon="⚽").`;
+
+document.getElementById('refreshBtn').addEventListener('click', async ()=>{
+  const toast = document.getElementById('refreshToast');
+  try{
+    await navigator.clipboard.writeText(REFRESH_PROMPT);
+    toast.textContent = 'Copiado ✓ Pégalo en cualquier chat de Claude (móvil incluido) para refrescar los datos ahora mismo.';
+  }catch(e){
+    toast.textContent = 'No se pudo copiar automáticamente. Mensaje: ' + REFRESH_PROMPT;
+  }
 });
 
 /* ---------- init ---------- */
