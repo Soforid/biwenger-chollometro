@@ -121,6 +121,11 @@ a{color:inherit;}
 }
 .refresh-btn:hover{background:var(--accent);color:var(--accent-ink);}
 .refresh-toast{display:block;margin-top:6px;font-size:12px;color:var(--ink-dim);max-width:52ch;min-height:1.4em;}
+.refresh-fallback{display:none;margin-top:6px;max-width:52ch;}
+.refresh-fallback textarea{
+  width:100%;min-height:88px;padding:8px 10px;border-radius:8px;border:1px solid var(--line);
+  background:var(--surface);color:var(--ink);font-size:11.5px;font-family:'Segoe UI',sans-serif;resize:vertical;
+}
 
 .kpis{display:flex;gap:0;flex-wrap:wrap;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--surface);box-shadow:var(--shadow);}
 .kpi{padding:10px 18px;min-width:118px;border-right:1px solid var(--line);}
@@ -316,6 +321,9 @@ footer{margin-top:40px;padding-top:16px;border-top:1px solid var(--line);color:v
       <h1>Chollómetro</h1>
       <button class="refresh-btn" id="refreshBtn" type="button">↻ Actualizar datos</button>
       <span class="refresh-toast" id="refreshToast"></span>
+      <div class="refresh-fallback" id="refreshFallback">
+        <textarea id="refreshFallbackText" readonly rows="4"></textarea>
+      </div>
     </div>
     <div class="kpis" id="kpis"></div>
   </div>
@@ -1039,11 +1047,24 @@ const REFRESH_PROMPT = `Actualiza el Chollómetro de Biwenger: clona y ejecuta e
 
 document.getElementById('refreshBtn').addEventListener('click', async ()=>{
   const toast = document.getElementById('refreshToast');
+  const fallback = document.getElementById('refreshFallback');
+  const fallbackText = document.getElementById('refreshFallbackText');
   try{
+    if(!navigator.clipboard) throw new Error('clipboard API no disponible');
     await navigator.clipboard.writeText(REFRESH_PROMPT);
     toast.textContent = 'Copiado ✓ Pégalo en cualquier chat de Claude (móvil incluido) para refrescar los datos ahora mismo.';
+    fallback.style.display = 'none';
   }catch(e){
-    toast.textContent = 'No se pudo copiar automáticamente. Mensaje: ' + REFRESH_PROMPT;
+    // La copia automática suele fallar dentro del iframe de un Artifact
+    // publicado (permisos de portapapeles bloqueados) - en vez de un
+    // mensaje suelto difícil de seleccionar, se rellena un textarea ya
+    // seleccionado para que el copiado manual (Ctrl+C / Cmd+C) funcione
+    // siempre, sin depender de esa API.
+    toast.textContent = 'No se pudo copiar automáticamente. Selecciona el texto de abajo y cópialo tú (Ctrl+C / Cmd+C):';
+    fallbackText.value = REFRESH_PROMPT;
+    fallback.style.display = 'block';
+    fallbackText.focus();
+    fallbackText.select();
   }
 });
 
