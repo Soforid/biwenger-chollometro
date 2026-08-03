@@ -204,6 +204,26 @@ a{color:inherit;}
 .streak-high{background:var(--gk);}
 .streak-mid{background:var(--rise);}
 
+/* ---- Flickwagen & La Borde ---- */
+.myteams-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px;}
+@media (max-width:820px){ .myteams-grid{grid-template-columns:1fr;} }
+.myteam-card{background:var(--surface);border:1px solid var(--line);border-left:4px solid var(--team-color,var(--accent));border-radius:10px;padding:16px 18px;box-shadow:var(--shadow);}
+.myteam-head{display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin-bottom:4px;}
+.myteam-head h3{margin:0;font-size:17px;color:var(--ink);}
+.myteam-balance{font-family:'Oswald',sans-serif;font-weight:700;font-size:14px;color:var(--ink);white-space:nowrap;}
+.myteam-balance small{font-family:'Segoe UI',sans-serif;font-weight:400;color:var(--ink-dim);font-size:11px;}
+.myteam-section{margin-top:14px;}
+.myteam-section h4{margin:0 0 6px;font-size:11.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-dim);}
+.myteam-section ul{margin:0;padding-left:18px;font-size:12.5px;color:var(--ink);}
+.myteam-section li{margin-bottom:4px;}
+.myteam-targets{padding-left:0;}
+.myteam-targets li{list-style:none;padding:5px 0;border-top:1px solid var(--line);}
+.myteam-targets li:first-child{border-top:none;}
+.myteam-player-row{display:grid;grid-template-columns:1fr 62px 54px 38px;gap:6px;align-items:center;padding:4px 0;border-top:1px solid var(--line);font-size:12px;}
+.myteam-player-row:first-of-type{border-top:none;}
+.rating-cell{font-weight:700;text-align:right;}
+.team-star{font-size:11px;margin-left:3px;}
+
 /* ---- scatter ---- */
 .scatter-card{background:var(--surface);border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow);padding:16px 18px 10px;position:relative;}
 .scatter-card canvas{width:100%;display:block;cursor:crosshair;}
@@ -339,6 +359,7 @@ footer{margin-top:40px;padding-top:16px;border-top:1px solid var(--line);color:v
     <button class="tab-btn active" data-tab="chollos">Top chollos</button>
     <button class="tab-btn" data-tab="scatter">Mapa de valor</button>
     <button class="tab-btn" data-tab="rivals" id="tabRivalsBtn" style="display:none">Rivales</button>
+    <button class="tab-btn" data-tab="myteams" id="tabMyTeamsBtn" style="display:none">Flickwagen &amp; La Borde</button>
     <button class="tab-btn" data-tab="players">Todos los jugadores</button>
   </div>
 
@@ -376,6 +397,14 @@ footer{margin-top:40px;padding-top:16px;border-top:1px solid var(--line);color:v
       <button class="modal-close" id="rosterModalClose" type="button">×</button>
       <div id="rosterModalContent"></div>
     </div>
+  </div>
+
+  <div class="tab-panel" id="panel-myteams" style="display:none">
+    <div class="section-head">
+      <h2>Flickwagen &amp; La Borde</h2>
+      <span class="hint">Valoración automática de cada plantilla, carencias detectadas y objetivos de fichaje según el mercado de hoy — orientativo, no una verdad absoluta</span>
+    </div>
+    <div class="myteams-grid" id="myteamsGrid"></div>
   </div>
 
   <div class="tab-panel" id="panel-players" style="display:none">
@@ -528,7 +557,7 @@ function renderChollos(){
     <div class="chollo-card">
       <span class="rank">${i+1}</span>
       <span class="pos-chip pos-${d.pos}" style="width:fit-content">${POS_LABEL[d.pos]}</span>
-      <span class="chollo-name">${d.name}</span>
+      <span class="chollo-name">${d.name}${teamStarHtml(d.id)}</span>
       <span class="chollo-meta">${d.team} · ${euros(d.price)}${d.role?` · ${d.role}`:''}</span>
       <span class="chollo-value">${d.value.toFixed(0)}<small>pts / M€</small></span>
     </div>
@@ -855,6 +884,152 @@ function augmentMarketFields(){
   });
 }
 
+/* ---------- Flickwagen & La Borde: análisis de equipo ---------- */
+// Análisis automático orientativo a partir de los mismos datos que ya
+// tenemos (plantilla real, mercado de hoy, presupuesto) - no es una
+// verdad absoluta, es un punto de partida para decidir con criterio.
+const MY_TEAMS = [
+  {key:'flickwagen', match:'Der Flickwagen', color:'var(--fall)'},
+  {key:'laborde', match:'La Borde', color:'var(--gk)'},
+];
+const STRONG_ROLES = new Set(['Dios','Clave','Importante']);
+
+function percentileRankInPos(pos, value){
+  if(value==null) return null;
+  const pool = data.filter(d=>d.pos===pos && d.value!=null).map(d=>d.value).sort((a,b)=>a-b);
+  if(!pool.length) return null;
+  let i=0; while(i<pool.length && pool[i]<value) i++;
+  return i/pool.length; // 0..1
+}
+
+function buildTeamProfile(rivalRow){
+  const [uid,name,balance,pending,rosterValue,por,def,cen,del,ent,squadSize] = rivalRow;
+  const pids = ROSTERS[uid] || [];
+  const roster = pids.map(pid=>dataById.get(pid)).filter(Boolean);
+  const myCounts = {1:por,2:def,3:cen,4:del,5:ent};
+
+  // Media de la liga en cada posición, para detectar "aquí vas corto" -
+  // usamos los propios rivales como vara de medir en vez de inventar un
+  // reparto "ideal" de plantilla.
+  const avgCounts = {1:0,2:0,3:0,4:0,5:0};
+  RIVALS.forEach(r=>{ [1,2,3,4,5].forEach(p=> avgCounts[p]+=r[4+p]); });
+  [1,2,3,4,5].forEach(p=> avgCounts[p] = avgCounts[p]/RIVALS.length);
+
+  const weakPositions = {};
+  const weaknesses = [];
+  [1,2,3,4].forEach(pos=>{ // no evaluamos ENT, no suele ser el foco de fichajes
+    const mine = roster.filter(p=>p.pos===pos);
+    const quantityGap = avgCounts[pos]>0 ? clamp01((avgCounts[pos]-mine.length)/avgCounts[pos]) : 0;
+    const hasStrong = mine.some(p=>STRONG_ROLES.has(p.role));
+    const qualityGap = (mine.length>0 && !hasStrong) ? 0.7 : 0;
+    weakPositions[pos] = Math.max(quantityGap, qualityGap);
+    if(quantityGap>0.34){
+      weaknesses.push(`Pocos ${POS_NAME[pos].toLowerCase()}s: tienes ${mine.length}, la media de la liga es ${avgCounts[pos].toFixed(1)}.`);
+    } else if(mine.length>0 && !hasStrong){
+      weaknesses.push(`Sin titular claro en ${POS_NAME[pos].toLowerCase()}: ninguno de los que tienes es de rol Clave/Importante.`);
+    }
+  });
+  if(!weaknesses.length) weaknesses.push('Sin carencias claras por ahora — plantilla razonablemente cubierta.');
+
+  const ratedRoster = [1,2,3,4,5].map(pos=>({
+    pos, label: POS_NAME[pos],
+    list: roster.filter(p=>p.pos===pos)
+      .map(p=>({...p, rating: percentileRankInPos(p.pos,p.value)}))
+      .sort((a,b)=>(b.price||0)-(a.price||0)),
+  })).filter(g=>g.list.length);
+
+  return {uid, name, balance, pending, budget: balance+pending, rosterValue, squadSize, weakPositions, weaknesses, ratedRoster};
+}
+
+function pickStrategyTargets(profile){
+  const candidates = data.filter(d=>(d.leagueFree||d.leagueForSale) && d.role!=='Descarte');
+  const scored = candidates.map(d=>{
+    const need = profile.weakPositions[d.pos]||0;
+    if(need<=0) return null;
+    const price = d.salePrice!=null ? d.salePrice : d.price;
+    if(price > profile.budget) return null; // no os lo podéis permitir de verdad
+    // Reutiliza pickScore (valor·rol·probabilidad de jugar·calendario), no
+    // solo valor·rol - así un jugador lesionado o suplente claro no sale
+    // recomendado aunque su ratio puntos/precio sea bueno sobre el papel.
+    const quality = d.score!=null ? d.score : 0;
+    return {d, score: need*quality};
+  }).filter(Boolean).sort((a,b)=>b.score-a.score);
+  return scored.slice(0,3).map(s=>s.d);
+}
+
+// Solo se marca con estrella cuando el mejor objetivo disponible es
+// genuinamente de rol fuerte (Clave/Importante/Dios) - si lo único que
+// encaja es mediocre, mejor no destacar nada a "sumamente importante".
+function pickStarTarget(profile){
+  return pickStrategyTargets(profile).find(d=>STRONG_ROLES.has(d.role)) || null;
+}
+
+let TEAM_STARS = {}; // playerId -> [{color,name}]
+let TEAM_PROFILES = {}; // key -> profile, calculado una vez y reutilizado
+function computeTeamStars(){
+  MY_TEAMS.forEach(t=>{
+    const row = RIVALS.find(r=>r[1]===t.match);
+    if(!row) return;
+    const profile = buildTeamProfile(row);
+    TEAM_PROFILES[t.key] = {...t, profile};
+    const star = pickStarTarget(profile);
+    if(star){
+      (TEAM_STARS[star.id] = TEAM_STARS[star.id]||[]).push({color:t.color, name:profile.name});
+    }
+  });
+}
+
+function teamStarHtml(pid){
+  const stars = TEAM_STARS[pid];
+  if(!stars) return '';
+  return stars.map(s=>`<span class="team-star" style="color:${s.color}" title="Fichaje prioritario para ${s.name} (rol fuerte + tapa una carencia + dentro de presupuesto)">★</span>`).join('');
+}
+
+function renderMyTeams(){
+  const entries = Object.values(TEAM_PROFILES);
+  if(!entries.length) return;
+  document.getElementById('tabMyTeamsBtn').style.display = '';
+  document.getElementById('myteamsGrid').innerHTML = entries.map(({match,color,profile})=>{
+    const rosterHtml = profile.ratedRoster.length ? profile.ratedRoster.map(g=>`
+      <div class="roster-group">
+        <h3>${g.label} <span class="roster-group-count">${g.list.length}</span></h3>
+        ${g.list.map(p=>`
+          <div class="myteam-player-row">
+            <div class="roster-player"><div class="pname">${p.name}${teamStarHtml(p.id)}</div><div class="pteam">${p.team}</div></div>
+            <div class="roster-cell tab">${euros(p.price)}</div>
+            <div class="roster-cell tab">${p.ptsLS==null?'—':p.ptsLS} pts</div>
+            <div class="roster-cell rating-cell">${p.rating==null?'—':(p.rating*10).toFixed(1)}</div>
+          </div>`).join('')}
+      </div>`).join('') : `<p class="empty">Sin jugadores en plantilla todavía.</p>`;
+
+    const weakHtml = profile.weaknesses.map(w=>`<li>${w}</li>`).join('');
+    const targets = pickStrategyTargets(profile);
+    const targetsHtml = targets.length ? targets.map(d=>{
+      const price = d.salePrice!=null ? d.salePrice : d.price;
+      return `<li><span class="pos-chip pos-${d.pos}">${POS_LABEL[d.pos]}</span> <b>${d.name}</b> (${d.team}) · ${euros(price)}${d.role?` · ${d.role}`:''}</li>`;
+    }).join('') : `<li>Ahora mismo no hay nadie en el mercado que encaje con lo que os falta y podáis pagar.</li>`;
+
+    return `<div class="myteam-card" style="--team-color:${color}">
+      <div class="myteam-head">
+        <h3>${profile.name}</h3>
+        <span class="myteam-balance">${euros(profile.balance)}${profile.pending>0?` <small>(+${euros(profile.pending)} pendiente)</small>`:''}</span>
+      </div>
+      <div class="myteam-section">
+        <h4>Plantilla</h4>
+        ${rosterHtml}
+      </div>
+      <div class="myteam-section">
+        <h4>Carencias</h4>
+        <ul>${weakHtml}</ul>
+      </div>
+      <div class="myteam-section">
+        <h4>Objetivos de fichaje ahora mismo</h4>
+        <ul class="myteam-targets">${targetsHtml}</ul>
+      </div>
+    </div>`;
+  }).join('');
+}
+
 /* ---------- Controls + table ---------- */
 const state = {search:'', pos:'all', team:'all', role:'all', onlyLeagueMarket:false, leagueMarketMode:'all', sortKey:'value', sortDir:-1};
 
@@ -1011,7 +1186,7 @@ function renderTable(){
 
     return `<tr>
       <td class="tab" style="color:var(--ink-dim)">${i+1}</td>
-      <td><div class="pname">${d.name}${marketBadge}</div><div class="pteam">${d.team}</div></td>
+      <td><div class="pname">${d.name}${marketBadge}${teamStarHtml(d.id)}</div><div class="pteam">${d.team}</div></td>
       <td><span class="pos-chip pos-${d.pos}">${POS_LABEL[d.pos]}</span></td>
       <td>${roleHtml}</td>
       <td class="tab">${euros(d.price)}</td>
@@ -1073,6 +1248,7 @@ document.getElementById('search').addEventListener('input', e=>{ state.search=e.
 
 if(HAS_LEAGUE_MARKET){
   augmentMarketFields();
+  computeTeamStars();
   document.getElementById('onlyLeagueMarketWrap').style.display = '';
   const modeSel = document.getElementById('leagueMarketMode');
   document.getElementById('onlyLeagueMarket').addEventListener('change', e=>{
@@ -1087,6 +1263,7 @@ renderKPIs();
 renderSpark();
 renderChollos();
 renderRivals();
+renderMyTeams();
 renderScatter();
 bindScatterTooltip();
 renderLegend();
