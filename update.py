@@ -123,6 +123,12 @@ def fetch_league_money(token, league_id, player_names, player_prices, player_pos
     # net them out after the full pass instead of counting them live.
     market_wins = set()  # {(buyer_id, player_id)}
     admin_reversals = set()  # {(from_id, player_id)}
+    # What each manager actually paid for a player, so the roster modal can
+    # show plusvalía/minusvalía against today's market value. The board feed
+    # is newest-first, so the FIRST time we see a (buyer, player) pair here
+    # is their most recent acquisition - exactly the one that matters if they
+    # still own it now.
+    acquisition_price = {}  # {(buyer_id, player_id): amount}
     # winning_amount / the player's CURRENT general market value, for free-agent
     # (machine-pool) signings this season. This is what "puja sugerida" is based
     # on: not how much the winner beat the runner-up by (that undersells early
@@ -170,6 +176,8 @@ def fetch_league_money(token, league_id, player_names, player_prices, player_pos
                     if buyer_id in bid_stats:
                         bid_stats[buyer_id]["wins"] += 1
                         market_wins.add((buyer_id, c.get("player")))
+                    if buyer_id and (buyer_id, c.get("player")) not in acquisition_price:
+                        acquisition_price[(buyer_id, c.get("player"))] = amount
                     bids = c.get("bids", [])
                     for b in bids:
                         bidder = str((b.get("user") or {}).get("id") or "")
@@ -209,6 +217,8 @@ def fetch_league_money(token, league_id, player_names, player_prices, player_pos
                         balances[seller_id] += amount
                     if buyer_id in balances:
                         balances[buyer_id] -= amount
+                    if buyer_id and (buyer_id, c.get("player")) not in acquisition_price:
+                        acquisition_price[(buyer_id, c.get("player"))] = amount
                     transfers.append([
                         item["date"], player_names.get(c.get("player"), "?"),
                         buyer["name"] if buyer else "Máquina", amount,
@@ -301,10 +311,19 @@ def fetch_league_money(token, league_id, player_names, player_prices, player_pos
                              token, league_id, my_user_id)
         rosters[uid] = [p["id"] for p in (roster["data"].get("players") or [])]
 
+    # Only keep what each manager paid for players they still actually own -
+    # no point exposing acquisition prices for players long since sold.
+    paid_by_user = {}
+    for uid, pids in rosters.items():
+        prices = {pid: acquisition_price[(uid, pid)] for pid in pids if (uid, pid) in acquisition_price}
+        if prices:
+            paid_by_user[uid] = prices
+
     return {
         "team_rows": team_rows, "transfers": transfers, "market": market,
         "bid_stats": bid_stats, "rosters": rosters, "users": users,
         "bid_median_by_pos": bid_median_by_pos, "bid_spread": bid_spread,
+        "paid_by_user": paid_by_user,
     }
 
 
@@ -452,6 +471,7 @@ def main():
     print("[6/9] Fetching league money, market and rivals (Biwenger, read-only)...")
     rivals_json = "[]"
     rosters_json = "{}"
+    paid_json = "{}"
     market = {}
     bid_median_by_pos = {1: 1.10, 2: 1.10, 3: 1.10, 4: 1.10, 5: 1.10}
     bid_spread = 0.15
@@ -500,6 +520,7 @@ def main():
                 rivals.sort(key=lambda r: -r[2])
                 rivals_json = json.dumps(rivals, ensure_ascii=False, separators=(",", ":"))
                 rosters_json = json.dumps(league_data["rosters"], ensure_ascii=False, separators=(",", ":"))
+                paid_json = json.dumps(league_data["paid_by_user"], ensure_ascii=False, separators=(",", ":"))
             else:
                 print("  -> league not found for this token, skipping")
         except Exception as e:
@@ -562,6 +583,7 @@ def main():
             .replace("__FONT700__", font700)
             .replace("__RIVALS__", rivals_json)
             .replace("__ROSTERS__", rosters_json)
+            .replace("__PAID_PRICES__", paid_json)
             .replace("__BID_MEDIAN_BY_POS__", json.dumps({str(k): v for k, v in bid_median_by_pos.items()}))
             .replace("__BID_SPREAD__", json.dumps(round(bid_spread, 3))))
     out_path = ROOT / "biwenger.html"

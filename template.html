@@ -184,16 +184,16 @@ a{color:inherit;}
 
 /* ---- roster modal ---- */
 .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:100;display:none;align-items:flex-start;justify-content:center;padding:5vh 16px;overflow-y:auto;}
-.modal-card{background:var(--surface);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);max-width:720px;width:100%;padding:20px 22px 26px;position:relative;}
+.modal-card{background:var(--surface);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);max-width:760px;width:100%;padding:20px 22px 26px;position:relative;}
 .modal-close{position:absolute;top:14px;right:14px;width:28px;height:28px;border-radius:8px;border:1px solid var(--line);background:var(--surface-2);color:var(--ink-dim);cursor:pointer;font-size:16px;line-height:1;}
 .modal-close:hover{color:var(--ink);}
 .roster-modal-head h2{margin:0 0 2px;font-size:22px;color:var(--ink);}
 .roster-modal-head .hint{color:var(--ink-dim);font-size:12.5px;}
-.roster-cols-head{display:grid;grid-template-columns:1fr 74px 66px 60px 96px 90px;gap:8px;padding:14px 0 4px;font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-dim);}
+.roster-cols-head{display:grid;grid-template-columns:1fr 68px 64px 62px 56px 92px 86px;gap:8px;padding:14px 0 4px;font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-dim);}
 .roster-group h3{margin:14px 0 4px;font-size:12.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--accent);border-top:1px solid var(--line);padding-top:10px;}
 .roster-group:first-child h3{border-top:none;padding-top:0;margin-top:6px;}
 .roster-group-count{color:var(--ink-dim);font-weight:400;text-transform:none;letter-spacing:0;}
-.roster-row{display:grid;grid-template-columns:1fr 74px 66px 60px 96px 90px;gap:8px;align-items:center;padding:6px 0;border-top:1px solid var(--line);}
+.roster-row{display:grid;grid-template-columns:1fr 68px 64px 62px 56px 92px 86px;gap:8px;align-items:center;padding:6px 0;border-top:1px solid var(--line);}
 .roster-row:first-of-type{border-top:none;}
 .roster-cell{font-size:12px;}
 .streak-row{display:flex;gap:3px;}
@@ -271,6 +271,10 @@ thead th .arrow{opacity:.5;font-size:9px;margin-left:3px;}
 tbody td{padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:middle;}
 tbody tr:last-child td{border-bottom:none;}
 tbody tr:hover{background:var(--surface-2);}
+.offer-cell{width:22px;}
+.offer-check{width:15px;height:15px;cursor:pointer;accent-color:var(--gk);}
+tr.row-offered{background:color-mix(in srgb, var(--gk) 14%, transparent);}
+tr.row-offered:hover{background:color-mix(in srgb, var(--gk) 22%, transparent);}
 .pname{font-weight:600;}
 .pteam{font-size:11.5px;color:var(--ink-dim);}
 .pos-chip{
@@ -445,6 +449,7 @@ const PLAYERS = __PLAYERS__; // [id,name,team,pos,price,inc,ptsLS,status,nextDif
 const MARKETCAP = __MARKETCAP__; // [[yymmdd,value],...]
 const RIVALS = __RIVALS__; // [[userId,name,balance,pendingFromListings,rosterValue,por,def,cen,del,ent,squadSize,wins,losses,rosterValueChange],...] sorted desc by balance
 const ROSTERS = __ROSTERS__; // {userId: [playerId,...]}
+const PAID_PRICES = __PAID_PRICES__; // {userId: {playerId: amountPaid}} solo para jugadores que siguen en su plantilla
 const BID_MEDIAN_BY_POS = __BID_MEDIAN_BY_POS__; // {"1":1.08,"2":1.14,...} real median winning_amount/value per position this season (POR/DEF/CEN/DEL/ENT), excluding sub-200k filler buys
 const BID_SPREAD = __BID_SPREAD__; // p75-minus-median gap of this season's purchases: how much further a genuinely contested listing goes, on top of its position's median
 
@@ -706,6 +711,7 @@ function renderStreak(fitness){
 
 function buildRosterModal(uid, name){
   const pids = ROSTERS[uid] || [];
+  const paidMap = PAID_PRICES[uid] || {};
   const players = pids.map(pid=>dataById.get(pid)).filter(Boolean);
   const rosterValue = players.reduce((s,p)=>s+(p.price||0),0);
   const groups = [1,2,3,4,5].map(pos=>({
@@ -729,9 +735,18 @@ function buildRosterModal(uid, name){
         } else {
           statusHtml = `<span class="status-chip">${STATUS_LABEL[p.status]||p.status}</span>`;
         }
+        const paid = paidMap[p.id];
+        let paidHtml = '—';
+        if(paid!=null){
+          const diff = (p.price||0) - paid;
+          const diffCls = diff>0?'up':diff<0?'down':'flat';
+          const sign = diff>0?'+':diff<0?'-':'';
+          paidHtml = `<span class="trend ${diffCls}">${sign}${eurosShort(Math.abs(diff))}</span>`;
+        }
         return `<div class="roster-row">
           <div class="roster-player"><div class="pname">${p.name}</div><div class="pteam">${p.team}</div></div>
           <div class="roster-cell tab">${euros(p.price)}</div>
+          <div class="roster-cell tab">${paidHtml}</div>
           <div class="roster-cell tab trend ${trendCls}">${trendTxt}</div>
           <div class="roster-cell tab">${p.pts||0}</div>
           <div class="roster-cell">${statusHtml}</div>
@@ -746,7 +761,7 @@ function buildRosterModal(uid, name){
       <h2>${name}</h2>
       <span class="hint">${players.length} jugadores · valor total ${euros(rosterValue)}</span>
     </div>
-    ${groups.length ? `<div class="roster-cols-head"><span></span><span>Valor</span><span>Hoy</span><span>Puntos</span><span>Estado</span><span>Últimos 5</span></div>` : ''}
+    ${groups.length ? `<div class="roster-cols-head"><span></span><span>Valor</span><span title="Diferencia entre lo que se pagó por el jugador y su valor de mercado actual">vs Compra</span><span>Hoy</span><span>Puntos</span><span>Estado</span><span>Últimos 5</span></div>` : ''}
     ${body}
   `;
 }
@@ -972,7 +987,11 @@ function computeTeamStars(){
     if(!row) return;
     const profile = buildTeamProfile(row);
     TEAM_PROFILES[t.key] = {...t, profile};
-    const star = pickStarTarget(profile);
+    const targets = pickStrategyTargets(profile);
+    targets.forEach(d=>{
+      d.recommendedFor = d.recommendedFor ? d.recommendedFor+', '+profile.name : profile.name;
+    });
+    const star = targets.find(d=>STRONG_ROLES.has(d.role));
     if(star){
       (TEAM_STARS[star.id] = TEAM_STARS[star.id]||[]).push({color:t.color, name:profile.name});
     }
@@ -1033,7 +1052,21 @@ function renderMyTeams(){
 /* ---------- Controls + table ---------- */
 const state = {search:'', pos:'all', team:'all', role:'all', onlyLeagueMarket:false, leagueMarketMode:'all', sortKey:'value', sortDir:-1};
 
+// "Ya he ofertado" - solo un recordatorio personal en el navegador (no se
+// comparte ni se manda a ningún sitio), para saber de un vistazo por quién
+// ya has pujado sin tener que acordarte. Sobrevive a que la página se
+// vuelva a publicar cada día porque vive en el propio navegador, no en el HTML.
+const OFFERED_KEY = 'chollometro_offered_players';
+let offeredIds;
+try{
+  offeredIds = new Set(JSON.parse(localStorage.getItem(OFFERED_KEY) || '[]'));
+}catch(e){ offeredIds = new Set(); }
+function saveOfferedIds(){
+  try{ localStorage.setItem(OFFERED_KEY, JSON.stringify([...offeredIds])); }catch(e){}
+}
+
 const BASE_COLS = [
+  {key:'offered', label:'', sortable:false},
   {key:'rank', label:'#', sortable:false},
   {key:'name', label:'Jugador', sortable:true},
   {key:'pos', label:'Pos', sortable:true},
@@ -1054,6 +1087,7 @@ const MARKET_COLS = [
   {key:'suggested', label:'Puja sugerida', sortable:true},
   {key:'seller', label:'Vendedor', sortable:true},
   {key:'score', label:'Puntuación', sortable:true},
+  {key:'recommendedFor', label:'Recomendado para', sortable:true},
 ];
 function getCols(){
   return state.onlyLeagueMarket ? [...BASE_COLS, ...MARKET_COLS] : BASE_COLS;
@@ -1182,9 +1216,12 @@ function renderTable(){
       <td class="tab">${askPriceHtml}</td>
       <td class="tab" style="color:var(--accent);font-weight:700">${d.suggested==null?'—':euros(d.suggested)}</td>
       <td class="pteam">${d.seller||'—'}</td>
-      <td class="tab">${d.score==null?'—':d.score.toFixed(0)}</td>`;
+      <td class="tab">${d.score==null?'—':d.score.toFixed(0)}</td>
+      <td class="pteam">${d.recommendedFor||'—'}</td>`;
 
-    return `<tr>
+    const isOffered = offeredIds.has(d.id);
+    return `<tr class="${isOffered?'row-offered':''}">
+      <td class="offer-cell"><input type="checkbox" class="offer-check" data-pid="${d.id}" ${isOffered?'checked':''} title="Marcar como ya ofertado"></td>
       <td class="tab" style="color:var(--ink-dim)">${i+1}</td>
       <td><div class="pname">${d.name}${marketBadge}${teamStarHtml(d.id)}</div><div class="pteam">${d.team}</div></td>
       <td><span class="pos-chip pos-${d.pos}">${POS_LABEL[d.pos]}</span></td>
@@ -1245,6 +1282,14 @@ document.getElementById('refreshBtn').addEventListener('click', async ()=>{
 
 /* ---------- init ---------- */
 document.getElementById('search').addEventListener('input', e=>{ state.search=e.target.value; renderTable(); });
+
+document.getElementById('rows').addEventListener('change', e=>{
+  if(!e.target.classList.contains('offer-check')) return;
+  const pid = Number(e.target.dataset.pid);
+  if(e.target.checked) offeredIds.add(pid); else offeredIds.delete(pid);
+  saveOfferedIds();
+  e.target.closest('tr').classList.toggle('row-offered', e.target.checked);
+});
 
 if(HAS_LEAGUE_MARKET){
   augmentMarketFields();
