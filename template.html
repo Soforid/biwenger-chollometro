@@ -304,6 +304,15 @@ tr.row-offered:hover{background:color-mix(in srgb, var(--gk) 22%, transparent);}
 .prob-chip.prob-high{color:var(--rise);}
 .prob-chip.prob-mid{color:var(--accent);}
 .prob-chip.prob-low{color:var(--fall);}
+.cuatro-rating-btn{
+  font-family:'Oswald',sans-serif;font-weight:700;font-size:12px;padding:2px 8px;border-radius:20px;
+  border:1px solid currentColor;background:transparent;cursor:pointer;line-height:1.4;
+}
+.cuatro-high{color:var(--rise);}
+.cuatro-mid{color:var(--accent);}
+.cuatro-low{color:var(--fall);}
+.cuatro-rating-big{font-size:15px;padding:2px 10px;border-radius:20px;border:1px solid currentColor;vertical-align:middle;margin-left:8px;}
+.cuatro-comment{font-size:13px;line-height:1.55;color:var(--ink);margin-top:14px;white-space:pre-line;}
 .market-badge{display:inline-block;font-size:9.5px;font-weight:700;letter-spacing:.02em;text-transform:uppercase;padding:1px 6px;border-radius:20px;margin-left:6px;vertical-align:middle;cursor:default;}
 .market-badge.market-free{background:var(--rise-bg);color:var(--rise);}
 .market-badge.market-forsale{background:color-mix(in srgb, var(--accent) 20%, transparent);color:var(--accent);}
@@ -448,7 +457,7 @@ footer{margin-top:40px;padding-top:16px;border-top:1px solid var(--line);color:v
 </div>
 
 <script>
-const PLAYERS = __PLAYERS__; // [id,name,team,pos,price,inc,ptsLS,status,nextDiff,role,injuryTxt,injuryDays,injuryGrav,injuryStatusTxt,injuryProb,leagueFree,leagueForSale,salePrice,saleSeller,saleUntil,pts,fitness]
+const PLAYERS = __PLAYERS__; // [id,name,team,pos,price,inc,ptsLS,status,nextDiff,role,injuryTxt,injuryDays,injuryGrav,injuryStatusTxt,injuryProb,leagueFree,leagueForSale,salePrice,saleSeller,saleUntil,pts,fitness,cuatroRating,cuatroComment,cuatroUrl]
 const MARKETCAP = __MARKETCAP__; // [[yymmdd,value],...]
 const RIVALS = __RIVALS__; // [[userId,name,balance,pendingFromListings,rosterValue,por,def,cen,del,ent,squadSize,wins,losses,rosterValueChange],...] sorted desc by balance
 const ROSTERS = __ROSTERS__; // {userId: [playerId,...]}
@@ -473,9 +482,9 @@ const normalize = s => (s||'').toString().trim().toLowerCase()
   .normalize('NFD').replace(/[̀-ͯ]/g,'');
 
 const data = PLAYERS.map(p=>{
-  const [id,name,team,pos,price,inc,ptsLS,status,nextDiff,role,injuryTxt,injuryDays,injuryGrav,injuryStatusTxt,injuryProb,leagueFree,leagueForSale,salePrice,saleSeller,saleUntil,pts,fitness]=p;
+  const [id,name,team,pos,price,inc,ptsLS,status,nextDiff,role,injuryTxt,injuryDays,injuryGrav,injuryStatusTxt,injuryProb,leagueFree,leagueForSale,salePrice,saleSeller,saleUntil,pts,fitness,cuatroRating,cuatroComment,cuatroUrl]=p;
   const value = (ptsLS!=null && ptsLS>0 && price>0) ? ptsLS/(price/1e6) : null;
-  return {id,name,team,pos,price,inc,ptsLS,status,nextDiff,value,role,injuryTxt,injuryDays,injuryGrav,injuryStatusTxt,injuryProb,leagueFree,leagueForSale,salePrice,saleSeller,saleUntil,pts,fitness,
+  return {id,name,team,pos,price,inc,ptsLS,status,nextDiff,value,role,injuryTxt,injuryDays,injuryGrav,injuryStatusTxt,injuryProb,leagueFree,leagueForSale,salePrice,saleSeller,saleUntil,pts,fitness,cuatroRating,cuatroComment,cuatroUrl,
     nameNorm: normalize(name), teamNorm: normalize(team)};
 });
 const dataById = new Map(data.map(d=>[d.id,d]));
@@ -781,6 +790,28 @@ document.getElementById('rosterModalOverlay').addEventListener('click', e=>{
   if(e.target.id==='rosterModalOverlay') closeRosterModal();
 });
 document.addEventListener('keydown', e=>{ if(e.key==='Escape') closeRosterModal(); });
+
+// Mismo semáforo que usa Cuatro Picas en su propio análisis (rojo = no
+// poner, ámbar = última opción, verde = poner).
+function cuatroTierClass(rating){
+  if(rating>=70) return 'cuatro-high';
+  if(rating>=35) return 'cuatro-mid';
+  return 'cuatro-low';
+}
+function buildCuatroModal(d){
+  return `
+    <div class="roster-modal-head">
+      <h2>${d.name} <span class="cuatro-rating-big ${cuatroTierClass(d.cuatroRating)}">${d.cuatroRating}%</span></h2>
+      <span class="hint">${d.team} · Valoración de Cuatro Picas para la temporada 26/27</span>
+    </div>
+    <p class="cuatro-comment">${d.cuatroComment||''}</p>
+    ${d.cuatroUrl?`<p class="hint"><a href="${d.cuatroUrl}" target="_blank" rel="noopener">Ver el análisis completo en Cuatro Picas ↗</a></p>`:''}
+  `;
+}
+function openCuatroModal(d){
+  document.getElementById('rosterModalContent').innerHTML = buildCuatroModal(d);
+  document.getElementById('rosterModalOverlay').style.display = 'flex';
+}
 
 /* ---------- Puja sugerida (mercado de tu liga) ---------- */
 function roleWeight(role){
@@ -1093,6 +1124,7 @@ const MARKET_COLS = [
   {key:'seller', label:'Vendedor', sortable:true},
   {key:'score', label:'Puntuación', sortable:true},
   {key:'recommendedFor', label:'Recomendado para', sortable:true},
+  {key:'cuatroRating', label:'Valoración 4Picas', sortable:true},
 ];
 function getCols(){
   return state.onlyLeagueMarket ? [...BASE_COLS, ...MARKET_COLS] : BASE_COLS;
@@ -1217,12 +1249,14 @@ function renderTable(){
     const askPriceHtml = d.askPrice==null ? '—' : (d.askPrice!==d.price
       ? `${euros(d.askPrice)}<div class="pteam">(${euros(d.price)})</div>`
       : euros(d.askPrice));
+    const cuatroHtml = d.cuatroRating==null ? '—' : `<button class="cuatro-rating-btn ${cuatroTierClass(d.cuatroRating)}" data-pid="${d.id}" title="Ver el comentario de Cuatro Picas">${d.cuatroRating}%</button>`;
     const marketCells = !showMarketCols ? '' : `
       <td class="tab">${askPriceHtml}</td>
       <td class="tab" style="color:var(--accent);font-weight:700">${d.suggested==null?'—':euros(d.suggested)}</td>
       <td class="pteam">${d.seller||'—'}</td>
       <td class="tab">${d.score==null?'—':d.score.toFixed(0)}</td>
-      <td class="pteam">${d.recommendedFor||'—'}</td>`;
+      <td class="pteam">${d.recommendedFor||'—'}</td>
+      <td class="tab">${cuatroHtml}</td>`;
 
     const isOffered = offeredIds.has(d.id);
     return `<tr class="${isOffered?'row-offered':''}">
@@ -1294,6 +1328,12 @@ document.getElementById('rows').addEventListener('change', e=>{
   if(e.target.checked) offeredIds.add(pid); else offeredIds.delete(pid);
   saveOfferedIds();
   e.target.closest('tr').classList.toggle('row-offered', e.target.checked);
+});
+document.getElementById('rows').addEventListener('click', e=>{
+  if(!e.target.classList.contains('cuatro-rating-btn')) return;
+  const pid = Number(e.target.dataset.pid);
+  const d = dataById.get(pid);
+  if(d) openCuatroModal(d);
 });
 
 if(HAS_LEAGUE_MARKET){

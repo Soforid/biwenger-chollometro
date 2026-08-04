@@ -10,12 +10,19 @@ import os
 import re
 import unicodedata
 import urllib.request
+from html import unescape as html_unescape
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
 STARTING_BALANCE = 50_000_000
 DEFAULT_LEAGUE_ID = "709656"
+
+CUATROPICAS_CATEGORY_URL = "https://cuatropicas.com/categoria/analisis-equipos/"
+# El sitio no es consistente: unos autores escriben "90% RECOMENDABLE" y otros
+# "RECOMENDABLE 90%" - se acepta cualquiera de los dos ordenes.
+CUATROPICAS_RATING_RE = re.compile(r"(\d{1,3})\s*%\s*RECOMENDABLE|RECOMENDABLE\s*[:\-]?\s*(\d{1,3})\s*%", re.I)
+CUATROPICAS_NAME_RE = re.compile(r"^[–‒\-]\s*([A-ZÀ-Ü][A-ZÀ-Ü0-9 .,'\-]{1,45}):\s*$")
 
 SLUGS = ["alaves","athletic","atletico","barcelona","betis","celta","deportivo","elche",
     "espanyol","getafe","levante","malaga","osasuna","racing","rayo-vallecano","real-madrid",
@@ -71,6 +78,84 @@ def fetch_lineup_probabilities(slugs):
                 n += 1
         print(f"  -> {slug}: {n} con % de titularidad")
     return prob_by_slug
+
+
+def _strip_html_tags(s):
+    return html_unescape(re.sub(r"<[^>]+>", "", s)).replace("\xa0", " ").strip()
+
+
+def parse_cuatropicas_article(article_html):
+    """Cuatro Picas team-analysis articles write one player per paragraph
+    block: a heading paragraph "– NAME:" (nothing else in it), then a couple
+    of paragraphs of stats + prose ending in a "NN% RECOMENDABLE" rating
+    somewhere in the text. Rather than fight the inconsistent nested-tag
+    markup (some names/ratings are wrapped in nested <span>/<strong> that
+    split the text across tags), every <p> is tag-stripped to plain text
+    first and matched on that - the same lesson learned from FutbolFantasy's
+    markup, just worse here since even the tag ORDER varies between authors."""
+    start = article_html.find('<div class="entry-content clr"')
+    content = article_html[start:start + 200000] if start != -1 else article_html
+    paras = [_strip_html_tags(p) for p in re.findall(r"<p[^>]*>(.*?)</p>", content, re.S)]
+    name_idxs = [(i, m.group(1)) for i, p in enumerate(paras) if (m := CUATROPICAS_NAME_RE.match(p))]
+    entries = []
+    n = len(paras)
+    for j, (idx, name) in enumerate(name_idxs):
+        end = name_idxs[j + 1][0] if j + 1 < len(name_idxs) else n
+        comment = " ".join(paras[idx + 1:end]).strip()
+        rm = CUATROPICAS_RATING_RE.search(comment)
+        if not rm:
+            continue
+        rating = int(rm.group(1) or rm.group(2))
+        entries.append({"name": name.strip(), "norm": normalize(name), "rating": rating, "comment": comment})
+    return entries
+
+
+def fetch_cuatropicas_ratings():
+    """Only articles for the CURRENT season (26/27) - Cuatro Picas publishes
+    team analyses progressively over pretemporada, so at any given time some
+    teams only have last season's article. Those are deliberately skipped
+    entirely rather than used as a stand-in, per explicit instruction: this
+    season's ratings or nothing. Returns {team_label_from_title: {"url":..., "players":[...]}}."""
+    entries = []
+    for page in range(1, 4):
+        url = CUATROPICAS_CATEGORY_URL if page == 1 else f"{CUATROPICAS_CATEGORY_URL}page/{page}/"
+        try:
+            page_html = fetch(url)
+        except Exception:
+            break
+        arts = re.split(r'(?=<article id="post-)', page_html)[1:]
+        if not arts:
+            break
+        found_this_page = 0
+        for a in arts:
+            tm = re.search(r'<h2 class="blog-entry-title entry-title">\s*<a href="([^"]+)"[^>]*>([^<]+)</a>', a)
+            if not tm:
+                continue
+            link, title = tm.groups()
+            title = html_unescape(title).strip()
+            if "26/27" in title or "26-27" in title:
+                entries.append((title, link))
+                found_this_page += 1
+        if found_this_page == 0 and page > 1:
+            break
+
+    ratings_by_team = {}
+    for title, link in entries:
+        team_label = re.sub(r"^An[aá]lisis\s+", "", title, flags=re.I)
+        team_label = re.sub(r"\s*26[/-]27\s*$", "", team_label).strip()
+        try:
+            article_html = fetch(link)
+        except Exception:
+            continue
+        players = parse_cuatropicas_article(article_html)
+        if players:
+            ratings_by_team[team_label] = {"url": link, "players": players}
+    return ratings_by_team
+
+
+def cuatropicas_team_matches(cuatro_label, biw_team_name):
+    a, b = normalize(cuatro_label), normalize(biw_team_name)
+    return bool(a) and bool(b) and (a == b or a in b or b in a)
 
 
 def fetch_auth(url, token, league_id=None, x_user=None):
@@ -328,7 +413,7 @@ def fetch_league_money(token, league_id, player_names, player_prices, player_pos
 
 
 def main():
-    print("[1/9] Fetching Biwenger data...")
+    print("[1/10] Fetching Biwenger data...")
     biw_data = json.loads(fetch("https://cf.biwenger.com/api/v2/competitions/la-liga/data?lang=es&score=1"))["data"]
     biw_market = json.loads(fetch("https://cf.biwenger.com/api/v2/competitions/la-liga/market?interval=day&includeValues=true"))["data"]
 
@@ -356,12 +441,13 @@ def main():
             # (shape unverified against real match data yet) for the "racha
             # de los últimos 5 partidos" in the roster modal.
             "fitness": p.get("fitness") or [],
+            "cuatroRating": None, "cuatroComment": None, "cuatroUrl": None,
         })
     vals = biw_market["values"][-60:]
     mc_line = json.dumps(vals, separators=(",", ":"))
     print(f"  -> {len(players)} players")
 
-    print("[2/9] Fetching FutbolFantasy team hierarchies (20 teams)...")
+    print("[2/10] Fetching FutbolFantasy team hierarchies (20 teams)...")
     header_re = re.compile(
         r'<img width="30" class="mr-2" src="https://static\.futbolfantasy\.com/uploads/images/(?P<img>[a-z0-9]+)\.png">\s*(?P<cat>[^<]+?)\s*</header>',
         re.S)
@@ -393,11 +479,11 @@ def main():
         roles_by_team[slug] = lst
         print(f"  -> {slug}: {len(lst)} players")
 
-    print("[3/9] Fetching starting-XI probabilities (team pages)...")
+    print("[3/10] Fetching starting-XI probabilities (team pages)...")
     prob_by_slug = fetch_lineup_probabilities(SLUGS)
     print(f"  -> {len(prob_by_slug)} players with a published probability")
 
-    print("[4/9] Fetching FutbolFantasy injuries...")
+    print("[4/10] Fetching FutbolFantasy injuries...")
     inj_html = fetch("https://www.futbolfantasy.com/laliga/lesionados")
     parts = re.split(r'<div class="elemento lesionado col-12">', inj_html)
     name_re = re.compile(r'href="https://www\.futbolfantasy\.com/jugadores/[a-z0-9\-]+" class="jugador">(?P<name>[^<]+?)</a>', re.S)
@@ -428,7 +514,32 @@ def main():
         }
     print(f"  -> {len(inj_by_norm)} injury/doubt entries")
 
-    print("[5/9] Matching FutbolFantasy data to Biwenger players...")
+    print("[5/10] Fetching Cuatro Picas team-analysis ratings (temporada 26/27 únicamente)...")
+    cuatro_by_team_label = fetch_cuatropicas_ratings()
+    print(f"  -> {len(cuatro_by_team_label)} equipos con análisis 26/27 publicado: {sorted(cuatro_by_team_label.keys())}")
+    biw_team_names = sorted({p["team"] for p in players if p["team"] != "Libre"})
+    cuatro_players_by_biw_team = {}
+    for cuatro_label, info in cuatro_by_team_label.items():
+        for biw_team_name in biw_team_names:
+            if cuatropicas_team_matches(cuatro_label, biw_team_name):
+                cuatro_players_by_biw_team[biw_team_name] = info
+                break
+
+    def find_cuatro_match(bw_norm, team):
+        info = cuatro_players_by_biw_team.get(team)
+        if not info:
+            return None
+        for c in info["players"]:
+            if c["norm"] == bw_norm:
+                return c
+        bw_last = bw_norm.split(" ")[-1]
+        if len(bw_last) > 2:
+            found = [c for c in info["players"] if c["norm"].split(" ")[-1] == bw_last]
+            if len(found) == 1:
+                return found[0]
+        return None
+
+    print("[6/10] Matching FutbolFantasy data to Biwenger players...")
 
     def team_slug(team):
         n = normalize(team)
@@ -468,7 +579,7 @@ def main():
         found = [v for k, v in inj_by_norm.items() if k.split(" ")[-1] == bw_last]
         return found[0] if len(found) == 1 else None
 
-    print("[6/9] Fetching league money, market and rivals (Biwenger, read-only)...")
+    print("[7/10] Fetching league money, market and rivals (Biwenger, read-only)...")
     rivals_json = "[]"
     rosters_json = "{}"
     paid_json = "{}"
@@ -528,10 +639,11 @@ def main():
     else:
         print("  -> BIWENGER_TOKEN not set, skipping league money/market/rivals section")
 
-    print("[7/9] Building player rows...")
+    print("[8/10] Building player rows...")
     role_matches = 0
     inj_matches = 0
     lineup_prob_matches = 0
+    cuatro_matches = 0
     rows = []
     for p in players:
         bw_norm = normalize(p["name"])
@@ -563,16 +675,23 @@ def main():
         sale_price = listing["price"] if listing else None
         sale_seller = listing["seller"] if listing else None
         sale_until = listing["until"] if listing else None
+        cuatro_match = find_cuatro_match(bw_norm, p["team"])
+        cuatro_rating = cuatro_comment = cuatro_url = None
+        if cuatro_match:
+            cuatro_matches += 1
+            cuatro_rating = cuatro_match["rating"]
+            cuatro_comment = cuatro_match["comment"]
+            cuatro_url = cuatro_players_by_biw_team[p["team"]]["url"]
         rows.append([
             p["id"], p["name"], p["team"], p["pos"], p["price"], p["inc"], p["ptsLS"], p["status"],
             p["nextDiff"], role, injury_txt, days_txt, grav_v, status_txt, prob_v,
             league_free, league_forsale, sale_price, sale_seller, sale_until,
-            p["pts"], p["fitness"],
+            p["pts"], p["fitness"], cuatro_rating, cuatro_comment, cuatro_url,
         ])
     players_json = json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
-    print(f"  -> role matches: {role_matches} / injury matches: {inj_matches} / lineup probability matches: {lineup_prob_matches}")
+    print(f"  -> role matches: {role_matches} / injury matches: {inj_matches} / lineup probability matches: {lineup_prob_matches} / Cuatro Picas matches: {cuatro_matches}")
 
-    print("[8/9] Building HTML...")
+    print("[9/10] Building HTML...")
     template = (ROOT / "template.html").read_text(encoding="utf-8")
     font600 = (ROOT / "oswald-600.b64").read_text(encoding="utf-8").strip()
     font700 = (ROOT / "oswald-700.b64").read_text(encoding="utf-8").strip()
@@ -590,7 +709,7 @@ def main():
     out_path.write_text(html, encoding="utf-8")
     print(f"  -> wrote {out_path} ({out_path.stat().st_size} bytes)")
 
-    print("[9/9] Done. Publish this file as the artifact to update the live dashboard.")
+    print("[10/10] Done. Publish this file as the artifact to update the live dashboard.")
 
 
 if __name__ == "__main__":
