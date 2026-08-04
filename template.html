@@ -120,6 +120,7 @@ a{color:inherit;}
   letter-spacing:.03em;cursor:pointer;transition:background .15s,color .15s;
 }
 .refresh-btn:hover{background:var(--accent);color:var(--accent-ink);}
+.refresh-hint{display:block;margin-top:5px;font-size:11px;color:var(--ink-dim);max-width:38ch;}
 .refresh-toast{display:block;margin-top:6px;font-size:12px;color:var(--ink-dim);max-width:52ch;min-height:1.4em;}
 .refresh-fallback{display:none;margin-top:6px;max-width:52ch;}
 .refresh-fallback textarea{
@@ -345,6 +346,7 @@ footer{margin-top:40px;padding-top:16px;border-top:1px solid var(--line);color:v
     <div class="brand">
       <h1>Chollómetro</h1>
       <button class="refresh-btn" id="refreshBtn" type="button">↻ Actualizar datos</button>
+      <span class="refresh-hint">Copia un mensaje para pedirle a un chat de Claude que actualice esta página — esta pantalla sola no puede hacerlo</span>
       <span class="refresh-toast" id="refreshToast"></span>
       <div class="refresh-fallback" id="refreshFallback">
         <textarea id="refreshFallbackText" readonly rows="4"></textarea>
@@ -1267,7 +1269,7 @@ document.getElementById('refreshBtn').addEventListener('click', async ()=>{
   try{
     if(!navigator.clipboard) throw new Error('clipboard API no disponible');
     await navigator.clipboard.writeText(REFRESH_PROMPT);
-    toast.textContent = 'Copiado ✓ Pégalo en cualquier chat de Claude (móvil incluido) para refrescar los datos ahora mismo.';
+    toast.textContent = 'Copiado ✓ Esta página no se actualiza sola: abre un chat de Claude (claude.ai o la app, móvil incluido) y pega el mensaje ahí — esa conversación hará el trabajo y republicará esta misma página.';
     fallback.style.display = 'none';
   }catch(e){
     // La copia automática suele fallar dentro del iframe de un Artifact
@@ -1275,7 +1277,7 @@ document.getElementById('refreshBtn').addEventListener('click', async ()=>{
     // mensaje suelto difícil de seleccionar, se rellena un textarea ya
     // seleccionado para que el copiado manual (Ctrl+C / Cmd+C) funcione
     // siempre, sin depender de esa API.
-    toast.textContent = 'No se pudo copiar automáticamente. Selecciona el texto de abajo y cópialo tú (Ctrl+C / Cmd+C):';
+    toast.textContent = 'No se pudo copiar automáticamente. Copia el texto de abajo (Ctrl+C / Cmd+C) y pégalo en un chat de Claude aparte (claude.ai o la app) — esta página no se actualiza sola, es esa conversación la que hace el trabajo y vuelve a publicar aquí:';
     fallbackText.value = REFRESH_PROMPT;
     fallback.style.display = 'block';
     fallbackText.focus();
