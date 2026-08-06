@@ -8,6 +8,7 @@ Writes biwenger.html next to this script.
 import json
 import os
 import re
+import time
 import unicodedata
 import urllib.request
 from html import unescape as html_unescape
@@ -33,9 +34,25 @@ CAT_MAP = {"dios":"Dios","clave":"Clave","importantes":"Importante","rotacion":"
 
 
 def fetch(url):
-    req = urllib.request.Request(url, headers={"User-Agent": UA})
-    with urllib.request.urlopen(req, timeout=30) as r:
-        return r.read().decode("utf-8")
+    # This pipeline makes ~70 external requests in a single run (20 FF team
+    # pages x2, injuries, cuatropicas category+articles, Biwenger league
+    # calls...) unattended once a day - a single transient timeout/500 on
+    # any one of them used to abort the entire run before it ever got to
+    # writing the HTML, which is the leading suspect for the automated daily
+    # refresh silently going stale for days at a time. One quiet retry after
+    # a short pause absorbs most of those blips without changing behavior
+    # for the (common) success case.
+    last_err = None
+    for attempt in range(2):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": UA})
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return r.read().decode("utf-8")
+        except Exception as e:
+            last_err = e
+            if attempt == 0:
+                time.sleep(2)
+    raise last_err
 
 
 # Letters with no canonical NFD decomposition (so accent-stripping alone
@@ -67,7 +84,11 @@ def fetch_lineup_probabilities(slugs):
     prob_re = re.compile(r'data-probabilidad="(?P<prob>\d+)%"')
     prob_by_slug = {}
     for slug in slugs:
-        html = fetch(f"https://www.futbolfantasy.com/laliga/equipos/{slug}")
+        try:
+            html = fetch(f"https://www.futbolfantasy.com/laliga/equipos/{slug}")
+        except Exception as e:
+            print(f"  -> {slug}: FAILED ({e}), skipping this team for today")
+            continue
         n = 0
         for m in lista_re.finditer(html):
             attrs = m.group("attrs")
@@ -458,7 +479,11 @@ def main():
 
     roles_by_team = {}
     for slug in SLUGS:
-        html = fetch(f"https://www.futbolfantasy.com/laliga/equipos/{slug}/jerarquias")
+        try:
+            html = fetch(f"https://www.futbolfantasy.com/laliga/equipos/{slug}/jerarquias")
+        except Exception as e:
+            print(f"  -> {slug}: FAILED ({e}), skipping this team for today")
+            continue
         headers = list(header_re.finditer(html))
         end_m = end_marker_re.search(html)
         end_pos = end_m.start() if end_m else len(html)
@@ -484,7 +509,11 @@ def main():
     print(f"  -> {len(prob_by_slug)} players with a published probability")
 
     print("[4/10] Fetching FutbolFantasy injuries...")
-    inj_html = fetch("https://www.futbolfantasy.com/laliga/lesionados")
+    try:
+        inj_html = fetch("https://www.futbolfantasy.com/laliga/lesionados")
+    except Exception as e:
+        print(f"  -> FAILED ({e}), continuing without injury data today")
+        inj_html = ""
     parts = re.split(r'<div class="elemento lesionado col-12">', inj_html)
     name_re = re.compile(r'href="https://www\.futbolfantasy\.com/jugadores/[a-z0-9\-]+" class="jugador">(?P<name>[^<]+?)</a>', re.S)
     injury_re = re.compile(r'<span class="lesion">(?P<injury>[^<]*)</span>', re.S)
