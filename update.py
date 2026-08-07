@@ -721,6 +721,8 @@ def main():
     print(f"  -> role matches: {role_matches} / injury matches: {inj_matches} / lineup probability matches: {lineup_prob_matches} / Cuatro Picas matches: {cuatro_matches}")
 
     print("[9/10] Building HTML...")
+    import datetime
+    build_time = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     template = (ROOT / "template.html").read_text(encoding="utf-8")
     font600 = (ROOT / "oswald-600.b64").read_text(encoding="utf-8").strip()
     font700 = (ROOT / "oswald-700.b64").read_text(encoding="utf-8").strip()
@@ -733,7 +735,9 @@ def main():
             .replace("__ROSTERS__", rosters_json)
             .replace("__PAID_PRICES__", paid_json)
             .replace("__BID_MEDIAN_BY_POS__", json.dumps({str(k): v for k, v in bid_median_by_pos.items()}))
-            .replace("__BID_SPREAD__", json.dumps(round(bid_spread, 3))))
+            .replace("__BID_SPREAD__", json.dumps(round(bid_spread, 3)))
+            .replace("__BUILD_TIME__", build_time))
+    print(f"  -> build time stamp: {build_time}")
     out_path = ROOT / "biwenger.html"
     out_path.write_text(html, encoding="utf-8")
     print(f"  -> wrote {out_path} ({out_path.stat().st_size} bytes)")
