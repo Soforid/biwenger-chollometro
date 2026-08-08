@@ -206,6 +206,20 @@ a{color:inherit;}
 .streak-mid{background:var(--rise);}
 
 /* ---- Flickwagen & La Borde ---- */
+.teams-grid{display:flex;flex-direction:column;gap:10px;}
+.team-row{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:12px 16px;box-shadow:var(--shadow);display:flex;align-items:center;gap:14px;cursor:pointer;transition:border-color .15s;}
+.team-row:hover{border-color:var(--accent);}
+.team-rank{font-size:15px;font-weight:700;color:var(--ink-dim);width:24px;text-align:right;flex:none;}
+.team-row-main{flex:1;min-width:0;}
+.team-row-name{font-weight:700;font-size:15.5px;color:var(--ink);}
+.team-row-desc{font-size:12.5px;color:var(--ink-dim);margin-top:2px;}
+.team-formation-badge{font-family:ui-monospace,monospace;font-size:13px;font-weight:700;background:var(--rise-bg);color:var(--rise);border-radius:6px;padding:4px 8px;flex:none;}
+.team-ratio-badge{font-size:17px;font-weight:800;color:var(--accent);flex:none;min-width:52px;text-align:right;}
+.team-xi-group{margin-bottom:10px;}
+.team-xi-row{display:flex;justify-content:space-between;gap:10px;padding:3px 0;font-size:13.5px;border-bottom:1px dashed var(--line);}
+.team-xi-row:last-child{border-bottom:none;}
+.team-xi-score{color:var(--ink-dim);font-variant-numeric:tabular-nums;}
+@media (max-width:620px){ .team-row{flex-wrap:wrap;} .team-row-main{order:1;flex-basis:100%;} }
 .myteams-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px;}
 @media (max-width:820px){ .myteams-grid{grid-template-columns:1fr;} }
 .myteam-card{background:var(--surface);border:1px solid var(--line);border-left:4px solid var(--team-color,var(--accent));border-radius:10px;padding:16px 18px;box-shadow:var(--shadow);}
@@ -374,6 +388,7 @@ footer{margin-top:40px;padding-top:16px;border-top:1px solid var(--line);color:v
   <div class="tabs-nav" id="tabsNav">
     <button class="tab-btn active" data-tab="chollos">Top chollos</button>
     <button class="tab-btn" data-tab="scatter">Mapa de valor</button>
+    <button class="tab-btn" data-tab="teams">Análisis de equipos</button>
     <button class="tab-btn" data-tab="rivals" id="tabRivalsBtn" style="display:none">Rivales</button>
     <button class="tab-btn" data-tab="myteams" id="tabMyTeamsBtn" style="display:none">Flickwagen &amp; La Borde</button>
     <button class="tab-btn" data-tab="players">Todos los jugadores</button>
@@ -397,6 +412,15 @@ footer{margin-top:40px;padding-top:16px;border-top:1px solid var(--line);color:v
       <div class="tooltip" id="tip"></div>
       <div class="legend" id="legend"></div>
     </div>
+  </div>
+
+  <div class="tab-panel" id="panel-teams" style="display:none">
+    <div class="section-head">
+      <h2>Análisis de equipos</h2>
+      <span class="hint">Mejor once posible de cada equipo de LaLiga (formación que más le encaja, portero aparte) según titularidad, rol y rendimiento — orientativo, no una alineación oficial</span>
+    </div>
+    <div class="teams-grid" id="teamsGrid"></div>
+    <span class="hint">Haz clic en un equipo para ver el once elegido</span>
   </div>
 
   <div class="tab-panel" id="panel-rivals" style="display:none">
@@ -1085,6 +1109,140 @@ function renderMyTeams(){
   }).join('');
 }
 
+/* ---------- Análisis de equipos: mejor once posible por formación ---------- */
+// Todas las formaciones que pediste, sin contar portero (11 = portero fijo +
+// estas 10 plazas de campo), tal y como las ofrece el propio juego.
+const FORMATIONS = [
+  {def:3,cen:4,del:3},{def:3,cen:5,del:2},{def:4,cen:3,del:3},{def:4,cen:4,del:2},
+  {def:4,cen:5,del:1},{def:5,cen:3,del:2},{def:5,cen:4,del:1},{def:3,cen:6,del:1},
+  {def:3,cen:3,del:4},{def:4,cen:2,del:4},{def:4,cen:6,del:0},{def:5,cen:2,del:3},
+  {def:3,cen:2,del:5},{def:5,cen:1,del:4},
+];
+const formationLabel = f => `${f.def}-${f.cen}-${f.del}`;
+
+// Cuanto más lleva anotado el máximo goleador de esta 26/27, más avanzada
+// está la temporada - no tenemos un contador de jornadas jugadas, así que
+// esto sirve de proxy para decidir cuánto pesan ya los puntos de esta
+// temporada frente a los de la 25/26 (base fiable pero desactualizada), tal
+// y como pediste vigilar con los puntos de las primeras jornadas.
+const outfieldPts = data.filter(d=>d.pos>=1 && d.pos<=4).map(d=>d.pts||0);
+const SEASON_PROGRESS = clamp01(Math.max(0,...outfieldPts) / 60);
+
+// A diferencia de "Pts / M€" (que premia el chollo barato y por eso no
+// sirve aquí: penalizaría a un crack caro frente a un suplente barato con
+// mejor ratio), esto mide calidad EN ABSOLUTO dentro de su posición - cuánto
+// vale en el mercado y cuánto anotó, sin dividir lo uno por lo otro.
+function percentileOf(pos, value, accessor){
+  const pool = data.filter(x=>x.pos===pos).map(accessor).filter(v=>v!=null).sort((a,b)=>a-b);
+  if(!pool.length || value==null) return 0.5;
+  let i=0; while(i<pool.length && pool[i]<value) i++;
+  return i/pool.length;
+}
+
+function outputFrac(d){
+  // Base fiable: percentil de precio (lo que el mercado ya valora hoy) y de
+  // puntos de la 25/26, ambos en absoluto dentro de su posición. Se va
+  // desplazando hacia el percentil de puntos YA conseguidos esta 26/27 a
+  // medida que avanza la temporada, para no dejarse llevar por 2-3 jornadas
+  // sueltas al principio pero tampoco ignorarlas del todo.
+  const price = percentileOf(d.pos, d.price, x=>x.price);
+  const lastSeason = percentileOf(d.pos, d.ptsLS, x=>x.ptsLS);
+  const baseline = (price + lastSeason) / 2;
+  const live = percentileOf(d.pos, d.pts, x=>x.pts);
+  return baseline*(1-SEASON_PROGRESS) + live*SEASON_PROGRESS;
+}
+
+// Mitad titularidad+rol (roleProb01, ya usado en la puja sugerida), mitad
+// rendimiento (precio+puntos) - ningún factor decide él solo quién entra.
+function xiScore(d){ return clamp01(roleProb01(d)*0.5 + outputFrac(d)*0.5); }
+data.forEach(d=>{ d.xiScore = xiScore(d); });
+
+function buildTeamXI(teamName){
+  const byPos = {1:[],2:[],3:[],4:[]};
+  data.forEach(d=>{ if(d.team===teamName && byPos[d.pos]) byPos[d.pos].push(d); });
+  if(!byPos[1].length) return null; // sin portero identificado, no evaluamos este equipo
+  [1,2,3,4].forEach(p=> byPos[p].sort((a,b)=>b.xiScore-a.xiScore));
+  const gk = byPos[1][0];
+  let best = null;
+  FORMATIONS.forEach(f=>{
+    if(byPos[2].length<f.def || byPos[3].length<f.cen || byPos[4].length<f.del) return;
+    const chosen = [gk, ...byPos[2].slice(0,f.def), ...byPos[3].slice(0,f.cen), ...byPos[4].slice(0,f.del)];
+    const ratio = chosen.reduce((s,d)=>s+d.xiScore,0) / chosen.length;
+    if(!best || ratio>best.ratio) best = {formation:f, chosen, ratio};
+  });
+  return best;
+}
+
+function teamDescription(result){
+  const byPos = {2:[],3:[],4:[]};
+  result.chosen.forEach(d=>{ if(byPos[d.pos]) byPos[d.pos].push(d); });
+  const lines = [2,3,4].filter(p=>byPos[p].length).map(pos=>({
+    pos, avg: byPos[pos].reduce((s,d)=>s+d.xiScore,0)/byPos[pos].length,
+  }));
+  const gkTxt = `${result.chosen[0].name} en portería`;
+  if(lines.length<2) return `${gkTxt}.`;
+  lines.sort((a,b)=>b.avg-a.avg);
+  const strong = lines[0], weak = lines[lines.length-1];
+  if(strong.avg - weak.avg < 0.08) return `${gkTxt}. Plantilla pareja entre líneas.`;
+  return `${gkTxt}. Línea más fuerte: ${POS_NAME[strong.pos].toLowerCase()}s. Punto más débil: ${POS_NAME[weak.pos].toLowerCase()}s.`;
+}
+
+let TEAM_RANKINGS = [];
+function computeTeamRankings(){
+  const teams = [...new Set(data.map(d=>d.team))].filter(t=>t!=='Libre');
+  TEAM_RANKINGS = teams.map(team=>{
+    const result = buildTeamXI(team);
+    if(!result) return null;
+    return {team, result, desc: teamDescription(result)};
+  }).filter(Boolean).sort((a,b)=>b.result.ratio-a.result.ratio);
+}
+
+function renderTeams(){
+  computeTeamRankings();
+  const grid = document.getElementById('teamsGrid');
+  grid.innerHTML = TEAM_RANKINGS.map((t,i)=>`
+    <div class="team-row" data-team="${t.team.replace(/"/g,'&quot;')}">
+      <span class="team-rank">${i+1}</span>
+      <div class="team-row-main">
+        <div class="team-row-name">${t.team}</div>
+        <div class="team-row-desc">${t.desc}</div>
+      </div>
+      <span class="team-formation-badge">${formationLabel(t.result.formation)}</span>
+      <span class="team-ratio-badge">${(t.result.ratio*100).toFixed(1)}</span>
+    </div>`).join('');
+  grid.querySelectorAll('.team-row').forEach(row=>{
+    row.addEventListener('click', ()=> openTeamXIModal(row.dataset.team));
+  });
+}
+
+function buildTeamXIModal(teamName){
+  const entry = TEAM_RANKINGS.find(t=>t.team===teamName);
+  if(!entry) return '';
+  const groups = [1,2,3,4].map(pos=>({
+    pos, label: POS_NAME[pos],
+    list: entry.result.chosen.filter(d=>d.pos===pos),
+  })).filter(g=>g.list.length);
+  const body = groups.map(g=>`
+    <div class="team-xi-group">
+      <h3>${g.label} <span class="roster-group-count">${g.list.length}</span></h3>
+      ${g.list.map(d=>`
+        <div class="team-xi-row">
+          <span>${d.name}${d.role?` · ${d.role}`:''}</span>
+          <span class="team-xi-score">${(d.xiScore*100).toFixed(0)}</span>
+        </div>`).join('')}
+    </div>`).join('');
+  return `
+    <div class="roster-modal-head">
+      <h2>${teamName} <span class="team-ratio-badge">${(entry.result.ratio*100).toFixed(1)}</span></h2>
+      <span class="hint">Formación elegida: ${formationLabel(entry.result.formation)} · ${entry.desc}</span>
+    </div>
+    ${body}`;
+}
+function openTeamXIModal(teamName){
+  document.getElementById('rosterModalContent').innerHTML = buildTeamXIModal(teamName);
+  document.getElementById('rosterModalOverlay').style.display = 'flex';
+}
+
 /* ---------- Controls + table ---------- */
 const state = {search:'', pos:'all', team:'all', role:'all', onlyLeagueMarket:false, leagueMarketMode:'all', sortKey:'value', sortDir:-1};
 
@@ -1354,6 +1512,7 @@ renderSpark();
 renderChollos();
 renderRivals();
 renderMyTeams();
+renderTeams();
 renderScatter();
 bindScatterTooltip();
 renderLegend();
