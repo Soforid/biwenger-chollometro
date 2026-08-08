@@ -388,9 +388,9 @@ footer{margin-top:40px;padding-top:16px;border-top:1px solid var(--line);color:v
   <div class="tabs-nav" id="tabsNav">
     <button class="tab-btn active" data-tab="chollos">Top chollos</button>
     <button class="tab-btn" data-tab="scatter">Mapa de valor</button>
-    <button class="tab-btn" data-tab="teams">Análisis de equipos</button>
     <button class="tab-btn" data-tab="rivals" id="tabRivalsBtn" style="display:none">Rivales</button>
     <button class="tab-btn" data-tab="myteams" id="tabMyTeamsBtn" style="display:none">Flickwagen &amp; La Borde</button>
+    <button class="tab-btn" data-tab="teams" id="tabTeamsBtn" style="display:none">Análisis de equipos</button>
     <button class="tab-btn" data-tab="players">Todos los jugadores</button>
   </div>
 
@@ -417,10 +417,10 @@ footer{margin-top:40px;padding-top:16px;border-top:1px solid var(--line);color:v
   <div class="tab-panel" id="panel-teams" style="display:none">
     <div class="section-head">
       <h2>Análisis de equipos</h2>
-      <span class="hint">Mejor once posible de cada equipo de LaLiga (formación que más le encaja, portero aparte) según titularidad, rol y rendimiento — orientativo, no una alineación oficial</span>
+      <span class="hint">Mejor once posible de cada plantilla de tu liga, con los jugadores que ya tiene cada manager (formación que más le encaja, portero aparte) según titularidad, rol y rendimiento — orientativo, no una alineación oficial</span>
     </div>
     <div class="teams-grid" id="teamsGrid"></div>
-    <span class="hint">Haz clic en un equipo para ver el once elegido</span>
+    <span class="hint">Haz clic en un manager para ver el once elegido</span>
   </div>
 
   <div class="tab-panel" id="panel-rivals" style="display:none">
@@ -1157,18 +1157,31 @@ function outputFrac(d){
 function xiScore(d){ return clamp01(roleProb01(d)*0.5 + outputFrac(d)*0.5); }
 data.forEach(d=>{ d.xiScore = xiScore(d); });
 
-function buildTeamXI(teamName){
+function buildTeamXI(uid){
+  const roster = (ROSTERS[uid]||[]).map(pid=>dataById.get(pid)).filter(Boolean);
   const byPos = {1:[],2:[],3:[],4:[]};
-  data.forEach(d=>{ if(d.team===teamName && byPos[d.pos]) byPos[d.pos].push(d); });
-  if(!byPos[1].length) return null; // sin portero identificado, no evaluamos este equipo
+  roster.forEach(d=>{ if(byPos[d.pos]) byPos[d.pos].push(d); });
+  if(!byPos[1].length) return null; // sin portero en la plantilla, no evaluamos este equipo
   [1,2,3,4].forEach(p=> byPos[p].sort((a,b)=>b.xiScore-a.xiScore));
   const gk = byPos[1][0];
   let best = null;
   FORMATIONS.forEach(f=>{
-    if(byPos[2].length<f.def || byPos[3].length<f.cen || byPos[4].length<f.del) return;
-    const chosen = [gk, ...byPos[2].slice(0,f.def), ...byPos[3].slice(0,f.cen), ...byPos[4].slice(0,f.del)];
+    // Principio de temporada: muchas plantillas todavía no llegan a los 18
+    // fichajes, así que exigir la formación completa dejaría fuera a la
+    // mayoría de managers. En vez de descartar la formación, se cubre con
+    // los que de verdad hay y se apunta cuántos huecos quedan sin cubrir -
+    // así toda plantilla con al menos un portero y un jugador de campo
+    // consigue un resultado, y se prioriza la formación con menos huecos.
+    const nDef = Math.min(f.def, byPos[2].length);
+    const nCen = Math.min(f.cen, byPos[3].length);
+    const nDel = Math.min(f.del, byPos[4].length);
+    if(nDef+nCen+nDel===0) return;
+    const chosen = [gk, ...byPos[2].slice(0,nDef), ...byPos[3].slice(0,nCen), ...byPos[4].slice(0,nDel)];
     const ratio = chosen.reduce((s,d)=>s+d.xiScore,0) / chosen.length;
-    if(!best || ratio>best.ratio) best = {formation:f, chosen, ratio};
+    const gaps = (f.def-nDef) + (f.cen-nCen) + (f.del-nDel);
+    if(!best || gaps<best.gaps || (gaps===best.gaps && ratio>best.ratio)){
+      best = {formation:f, chosen, ratio, gaps};
+    }
   });
   return best;
 }
@@ -1179,7 +1192,8 @@ function teamDescription(result){
   const lines = [2,3,4].filter(p=>byPos[p].length).map(pos=>({
     pos, avg: byPos[pos].reduce((s,d)=>s+d.xiScore,0)/byPos[pos].length,
   }));
-  const gkTxt = `${result.chosen[0].name} en portería`;
+  const gapsTxt = result.gaps>0 ? ` (plantilla incompleta, faltan ${result.gaps} para el once)` : '';
+  const gkTxt = `${result.chosen[0].name} en portería${gapsTxt}`;
   if(lines.length<2) return `${gkTxt}.`;
   lines.sort((a,b)=>b.avg-a.avg);
   const strong = lines[0], weak = lines[lines.length-1];
@@ -1189,34 +1203,36 @@ function teamDescription(result){
 
 let TEAM_RANKINGS = [];
 function computeTeamRankings(){
-  const teams = [...new Set(data.map(d=>d.team))].filter(t=>t!=='Libre');
-  TEAM_RANKINGS = teams.map(team=>{
-    const result = buildTeamXI(team);
+  TEAM_RANKINGS = RIVALS.map(r=>{
+    const [uid,name] = r;
+    const result = buildTeamXI(uid);
     if(!result) return null;
-    return {team, result, desc: teamDescription(result)};
+    return {uid, name, result, desc: teamDescription(result)};
   }).filter(Boolean).sort((a,b)=>b.result.ratio-a.result.ratio);
 }
 
 function renderTeams(){
+  if(!RIVALS.length) return;
+  document.getElementById('tabTeamsBtn').style.display = '';
   computeTeamRankings();
   const grid = document.getElementById('teamsGrid');
   grid.innerHTML = TEAM_RANKINGS.map((t,i)=>`
-    <div class="team-row" data-team="${t.team.replace(/"/g,'&quot;')}">
+    <div class="team-row" data-uid="${t.uid}">
       <span class="team-rank">${i+1}</span>
       <div class="team-row-main">
-        <div class="team-row-name">${t.team}</div>
+        <div class="team-row-name">${t.name}</div>
         <div class="team-row-desc">${t.desc}</div>
       </div>
       <span class="team-formation-badge">${formationLabel(t.result.formation)}</span>
       <span class="team-ratio-badge">${(t.result.ratio*100).toFixed(1)}</span>
     </div>`).join('');
   grid.querySelectorAll('.team-row').forEach(row=>{
-    row.addEventListener('click', ()=> openTeamXIModal(row.dataset.team));
+    row.addEventListener('click', ()=> openTeamXIModal(row.dataset.uid));
   });
 }
 
-function buildTeamXIModal(teamName){
-  const entry = TEAM_RANKINGS.find(t=>t.team===teamName);
+function buildTeamXIModal(uid){
+  const entry = TEAM_RANKINGS.find(t=>t.uid===uid);
   if(!entry) return '';
   const groups = [1,2,3,4].map(pos=>({
     pos, label: POS_NAME[pos],
@@ -1227,19 +1243,19 @@ function buildTeamXIModal(teamName){
       <h3>${g.label} <span class="roster-group-count">${g.list.length}</span></h3>
       ${g.list.map(d=>`
         <div class="team-xi-row">
-          <span>${d.name}${d.role?` · ${d.role}`:''}</span>
+          <span class="${d.team==='Libre'?'player-teamless':''}">${d.name} <small>(${d.team})</small>${d.role?` · ${d.role}`:''}</span>
           <span class="team-xi-score">${(d.xiScore*100).toFixed(0)}</span>
         </div>`).join('')}
     </div>`).join('');
   return `
     <div class="roster-modal-head">
-      <h2>${teamName} <span class="team-ratio-badge">${(entry.result.ratio*100).toFixed(1)}</span></h2>
+      <h2>${entry.name} <span class="team-ratio-badge">${(entry.result.ratio*100).toFixed(1)}</span></h2>
       <span class="hint">Formación elegida: ${formationLabel(entry.result.formation)} · ${entry.desc}</span>
     </div>
     ${body}`;
 }
-function openTeamXIModal(teamName){
-  document.getElementById('rosterModalContent').innerHTML = buildTeamXIModal(teamName);
+function openTeamXIModal(uid){
+  document.getElementById('rosterModalContent').innerHTML = buildTeamXIModal(uid);
   document.getElementById('rosterModalOverlay').style.display = 'flex';
 }
 
