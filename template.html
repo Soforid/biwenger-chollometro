@@ -146,23 +146,6 @@ a{color:inherit;}
 .section-head h2{font-size:20px;margin:0;color:var(--ink);}
 .section-head .hint{font-size:12px;color:var(--ink-dim);}
 
-/* ---- chollos strip ---- */
-.chollos{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px;}
-.chollo-card{
-  background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:12px 14px;
-  box-shadow:var(--shadow);display:flex;flex-direction:column;gap:6px;position:relative;
-}
-.chollo-card .rank{
-  position:absolute;top:10px;right:12px;font-family:'Oswald',sans-serif;font-weight:700;
-  font-size:22px;color:var(--surface-2);-webkit-text-stroke:1px var(--line);
-}
-.chollo-name{font-weight:700;font-size:15px;padding-right:26px;}
-.chollo-meta{font-size:12px;color:var(--ink-dim);}
-.chollo-value{
-  font-family:'Oswald',sans-serif;font-weight:700;font-size:22px;color:var(--accent);
-  display:flex;align-items:baseline;gap:5px;
-}
-.chollo-value small{font-family:'Segoe UI',sans-serif;font-weight:400;font-size:11px;color:var(--ink-dim);text-transform:none;letter-spacing:0;}
 
 
 /* ---- rivals ---- */
@@ -386,26 +369,17 @@ footer{margin-top:40px;padding-top:16px;border-top:1px solid var(--line);color:v
 <div class="wrap">
 
   <div class="tabs-nav" id="tabsNav">
-    <button class="tab-btn active" data-tab="chollos">Top chollos</button>
+    <button class="tab-btn active" data-tab="players">Jugadores</button>
     <button class="tab-btn" data-tab="scatter">Mapa de valor</button>
     <button class="tab-btn" data-tab="rivals" id="tabRivalsBtn" style="display:none">Rivales</button>
     <button class="tab-btn" data-tab="myteams" id="tabMyTeamsBtn" style="display:none">Flickwagen &amp; La Borde</button>
     <button class="tab-btn" data-tab="teams" id="tabTeamsBtn" style="display:none">Análisis de equipos</button>
-    <button class="tab-btn" data-tab="players">Todos los jugadores</button>
-  </div>
-
-  <div class="tab-panel" id="panel-chollos">
-    <div class="section-head">
-      <h2>Top chollos</h2>
-      <span class="hint">Mejor ratio puntos (25/26) por millón de euros</span>
-    </div>
-    <div class="chollos" id="chollos"></div>
   </div>
 
   <div class="tab-panel" id="panel-scatter" style="display:none">
     <div class="section-head">
       <h2>Mapa de valor</h2>
-      <span class="hint">Precio (escala log) frente a puntos de la temporada pasada — abajo a la derecha = caro y flojo, arriba a la izquierda = chollo</span>
+      <span class="hint" id="scatterHint">Precio (escala log) frente a puntos de la temporada pasada — abajo a la derecha = caro y flojo, arriba a la izquierda = chollo</span>
     </div>
     <div class="scatter-card">
       <canvas id="scatter" height="320"></canvas>
@@ -447,9 +421,9 @@ footer{margin-top:40px;padding-top:16px;border-top:1px solid var(--line);color:v
     <div class="myteams-grid" id="myteamsGrid"></div>
   </div>
 
-  <div class="tab-panel" id="panel-players" style="display:none">
+  <div class="tab-panel" id="panel-players">
     <div class="section-head">
-      <h2>Todos los jugadores</h2>
+      <h2>Jugadores</h2>
       <span class="hint" id="countHint"></span>
     </div>
     <div class="controls">
@@ -457,10 +431,10 @@ footer{margin-top:40px;padding-top:16px;border-top:1px solid var(--line);color:v
       <div class="postabs" id="postabs"></div>
       <select id="teamSel"></select>
       <select id="roleSel"></select>
-      <label class="chk-wrap" id="onlyLeagueMarketWrap" style="display:none"><input class="chk" type="checkbox" id="onlyLeagueMarket"> Solo en el mercado de mi liga</label>
+      <label class="chk-wrap" id="onlyLeagueMarketWrap" style="display:none"><input class="chk" type="checkbox" id="onlyLeagueMarket" checked> Solo en el mercado de mi liga</label>
       <select id="leagueMarketMode" style="display:none">
         <option value="all">Todos</option>
-        <option value="free">Libres (máquina)</option>
+        <option value="free" selected>Libres (máquina)</option>
         <option value="forsale">No libres (traspasos)</option>
       </select>
     </div>
@@ -513,6 +487,27 @@ const data = PLAYERS.map(p=>{
 });
 const dataById = new Map(data.map(d=>[d.id,d]));
 const HAS_LEAGUE_MARKET = data.some(d=>d.leagueFree || d.leagueForSale);
+
+// Cuánto ha avanzado la temporada 26/27: no tenemos un contador de jornadas
+// jugadas, así que usamos como proxy los puntos del máximo goleador/asistente
+// del momento - al empezar la temporada son 0 y van subiendo según se juegan
+// jornadas. Sirve para decidir cuándo los datos de ESTA temporada ya pesan
+// más que los de la pasada (25/26), y para que el mapa de valor y el
+// análisis de equipos se actualicen solos según se completan jornadas, sin
+// depender de un disparador aparte (el pipeline ya corre a diario).
+const MAX_CURRENT_PTS = Math.max(0, ...data.filter(d=>d.pos>=1 && d.pos<=4).map(d=>d.pts||0));
+const SEASON_STARTED = MAX_CURRENT_PTS > 0;
+const SEASON_PROGRESS = Math.max(0, Math.min(1, MAX_CURRENT_PTS / 60));
+
+// Percentil (0-1) de un valor dentro de su posición - mide calidad EN
+// ABSOLUTO (cuánto vale en el mercado, cuánto anotó), no un ratio como
+// "pts/M€" que premiaría al suplente barato sobre el crack caro.
+function percentileOf(pos, value, accessor){
+  const pool = data.filter(x=>x.pos===pos).map(accessor).filter(v=>v!=null).sort((a,b)=>a-b);
+  if(!pool.length || value==null) return 0.5;
+  let i=0; while(i<pool.length && pool[i]<value) i++;
+  return i/pool.length;
+}
 
 function diffBucket(nd){
   if(nd==null) return {label:'—',cls:'nd-none'};
@@ -581,32 +576,9 @@ function renderSpark(){
   ctx.beginPath(); ctx.arc(pts[pts.length-1][0],pts[pts.length-1][1],2.4,0,7); ctx.fill();
 }
 
-/* ---------- Chollos ---------- */
-function renderChollos(){
-  const el = document.getElementById('chollos');
-  let pool = data.filter(d=>d.value!=null && d.status==='ok' && d.price>=300000 && d.role!=='Descarte');
-  // Si tenemos el mercado de tu liga, los chollos se limitan a lo que hoy
-  // puedes realmente fichar (y por tanto se renuevan solos cada día según
-  // cambia el mercado); si no hay liga conectada, se muestra todo LaLiga.
-  if(HAS_LEAGUE_MARKET){
-    pool = pool.filter(d=>d.leagueFree || d.leagueForSale);
-    document.querySelector('#panel-chollos .hint').textContent =
-      'Mejor ratio puntos (25/26) por millón de euros, entre lo disponible ahora mismo en el mercado de tu liga';
-  }
-  const list = pool.sort((a,b)=>b.value-a.value).slice(0,16);
-  el.innerHTML = list.map((d,i)=>`
-    <div class="chollo-card">
-      <span class="rank">${i+1}</span>
-      <span class="pos-chip pos-${d.pos}" style="width:fit-content">${POS_LABEL[d.pos]}</span>
-      <span class="chollo-name ${d.team==='Libre'?'player-teamless':''}">${d.name}${teamStarHtml(d.id)}</span>
-      <span class="chollo-meta">${d.team} · ${euros(d.price)}${d.role?` · ${d.role}`:''}</span>
-      <span class="chollo-value">${d.value.toFixed(0)}<small>pts / M€</small></span>
-    </div>
-  `).join('');
-}
-
 /* ---------- Scatter ---------- */
 let scatterPts = [];
+let scatterFieldUsed = 'ptsLS';
 function renderScatter(){
   const c = document.getElementById('scatter');
   const dpr = window.devicePixelRatio||1;
@@ -618,9 +590,18 @@ function renderScatter(){
   ctx.scale(dpr,dpr);
   ctx.clearRect(0,0,w,h);
 
-  const pts = data.filter(d=>d.ptsLS!=null && d.price>0);
+  // En cuanto la 26/27 tiene puntos reales (se ha jugado al menos una
+  // jornada), el mapa pasa a usarlos en vez de los de la 25/26 - y sigue
+  // actualizándose solo cada día según el pipeline trae más jornadas, sin
+  // necesitar ningún disparador aparte.
+  const scatterField = SEASON_STARTED ? 'pts' : 'ptsLS';
+  scatterFieldUsed = scatterField;
+  document.getElementById('scatterHint').textContent = SEASON_STARTED
+    ? 'Precio (escala log) frente a puntos de esta temporada (26/27) — abajo a la derecha = caro y flojo, arriba a la izquierda = chollo'
+    : 'Precio (escala log) frente a puntos de la temporada pasada (25/26, la 26/27 aún no ha empezado) — abajo a la derecha = caro y flojo, arriba a la izquierda = chollo';
+  const pts = data.filter(d=>d[scatterField]!=null && d.price>0);
   const xs = pts.map(d=>Math.log10(d.price));
-  const ys = pts.map(d=>d.ptsLS);
+  const ys = pts.map(d=>d[scatterField]);
   const xMin=Math.min(...xs), xMax=Math.max(...xs);
   const yMin=Math.min(0,...ys), yMax=Math.max(...ys);
   const padL=40,padB=26,padT=10,padR=10;
@@ -644,7 +625,7 @@ function renderScatter(){
 
   scatterPts = [];
   pts.forEach(d=>{
-    const x = X(Math.log10(d.price)), y = Y(d.ptsLS);
+    const x = X(Math.log10(d.price)), y = Y(d[scatterField]);
     ctx.beginPath();
     ctx.fillStyle = styles.getPropertyValue(POS_COLOR[d.pos].slice(4,-1)).trim() || '#999';
     ctx.globalAlpha = 0.72;
@@ -670,7 +651,8 @@ function bindScatterTooltip(){
       tip.style.opacity=1;
       tip.style.left = best.x+'px';
       tip.style.top = (best.y-8)+'px';
-      tip.innerHTML = `<b>${best.d.name}</b>${best.d.team} · ${euros(best.d.price)} · ${best.d.ptsLS} pts 25/26`;
+      const ptsLabel = scatterFieldUsed==='pts' ? 'pts 26/27' : 'pts 25/26';
+      tip.innerHTML = `<b>${best.d.name}</b>${best.d.team} · ${euros(best.d.price)} · ${best.d[scatterFieldUsed]} ${ptsLabel}`;
     } else {
       tip.style.opacity=0;
     }
@@ -1120,41 +1102,55 @@ const FORMATIONS = [
 ];
 const formationLabel = f => `${f.def}-${f.cen}-${f.del}`;
 
-// Cuanto más lleva anotado el máximo goleador de esta 26/27, más avanzada
-// está la temporada - no tenemos un contador de jornadas jugadas, así que
-// esto sirve de proxy para decidir cuánto pesan ya los puntos de esta
-// temporada frente a los de la 25/26 (base fiable pero desactualizada), tal
-// y como pediste vigilar con los puntos de las primeras jornadas.
-const outfieldPts = data.filter(d=>d.pos>=1 && d.pos<=4).map(d=>d.pts||0);
-const SEASON_PROGRESS = clamp01(Math.max(0,...outfieldPts) / 60);
-
-// A diferencia de "Pts / M€" (que premia el chollo barato y por eso no
-// sirve aquí: penalizaría a un crack caro frente a un suplente barato con
-// mejor ratio), esto mide calidad EN ABSOLUTO dentro de su posición - cuánto
-// vale en el mercado y cuánto anotó, sin dividir lo uno por lo otro.
-function percentileOf(pos, value, accessor){
-  const pool = data.filter(x=>x.pos===pos).map(accessor).filter(v=>v!=null).sort((a,b)=>a-b);
-  if(!pool.length || value==null) return 0.5;
-  let i=0; while(i<pool.length && pool[i]<value) i++;
-  return i/pool.length;
+// Puntos de las últimas jornadas disputadas (racha reciente) - reutiliza la
+// misma extracción que el indicador de racha de "fitness" del roster modal.
+function fitnessPts(m){
+  return m && typeof m.points==='number' ? m.points : (m && typeof m.p==='number' ? m.p : null);
+}
+function recentFormFrac(d){
+  const list = Array.isArray(d.fitness) ? d.fitness : [];
+  const vals = list.slice(0,3).map(fitnessPts).filter(v=>v!=null);
+  if(!vals.length) return 0.5; // sin partidos recientes con dato -> neutro, no penaliza
+  const avg = vals.reduce((s,v)=>s+v,0) / vals.length;
+  return percentileOf(d.pos, avg, x=>{
+    const xv = (Array.isArray(x.fitness)?x.fitness:[]).slice(0,3).map(fitnessPts).filter(v=>v!=null);
+    return xv.length ? xv.reduce((s,v)=>s+v,0)/xv.length : null;
+  });
 }
 
-function outputFrac(d){
-  // Base fiable: percentil de precio (lo que el mercado ya valora hoy) y de
-  // puntos de la 25/26, ambos en absoluto dentro de su posición. Se va
-  // desplazando hacia el percentil de puntos YA conseguidos esta 26/27 a
-  // medida que avanza la temporada, para no dejarse llevar por 2-3 jornadas
-  // sueltas al principio pero tampoco ignorarlas del todo.
-  const price = percentileOf(d.pos, d.price, x=>x.price);
+// "Puntos conseguidos globales": mezcla los de la 25/26 (base fiable pero ya
+// vieja) con los de ESTA temporada, desplazando el peso hacia los actuales a
+// medida que avanza (ver SEASON_PROGRESS) - así no nos dejamos llevar por
+// 2-3 jornadas sueltas al principio pero tampoco los ignoramos del todo.
+function globalPointsFrac(d){
   const lastSeason = percentileOf(d.pos, d.ptsLS, x=>x.ptsLS);
-  const baseline = (price + lastSeason) / 2;
-  const live = percentileOf(d.pos, d.pts, x=>x.pts);
-  return baseline*(1-SEASON_PROGRESS) + live*SEASON_PROGRESS;
+  const current = percentileOf(d.pos, d.pts, x=>x.pts);
+  return lastSeason*(1-SEASON_PROGRESS) + current*SEASON_PROGRESS;
 }
 
-// Mitad titularidad+rol (roleProb01, ya usado en la puja sugerida), mitad
-// rendimiento (precio+puntos) - ningún factor decide él solo quién entra.
-function xiScore(d){ return clamp01(roleProb01(d)*0.5 + outputFrac(d)*0.5); }
+// "Racha en subida de dinero": solo tenemos el movimiento de precio de HOY
+// (Biwenger no nos da un histórico de precio por jugador), así que es la
+// mejor aproximación honesta disponible - no se inventa una racha de varios
+// días que no podemos verificar.
+function priceMomentumFrac(d){
+  if(!(d.price>0)) return 0.5;
+  const pct = d.inc/d.price;
+  return percentileOf(d.pos, pct, x=> x.price>0 ? x.inc/x.price : null);
+}
+
+// Cinco factores, ninguno decide él solo quién entra en el once:
+// titularidad+rol (ya usado en la puja sugerida), precio de mercado, puntos
+// conseguidos en total, forma de las últimas jornadas y movimiento de precio
+// de hoy - pesos según cuánto pediste que influyera cada uno.
+function xiScore(d){
+  return clamp01(
+    roleProb01(d) * 0.30 +
+    percentileOf(d.pos, d.price, x=>x.price) * 0.20 +
+    globalPointsFrac(d) * 0.25 +
+    recentFormFrac(d) * 0.15 +
+    priceMomentumFrac(d) * 0.10
+  );
+}
 data.forEach(d=>{ d.xiScore = xiScore(d); });
 
 function buildTeamXI(uid){
@@ -1515,6 +1511,13 @@ if(HAS_LEAGUE_MARKET){
   computeTeamStars();
   document.getElementById('onlyLeagueMarketWrap').style.display = '';
   const modeSel = document.getElementById('leagueMarketMode');
+  // Con liga conectada, lo más útil de entrada es ver quién está libre en tu
+  // mercado ahora mismo - por eso "Jugadores" arranca ya filtrado así (el
+  // checkbox y el select ya lo reflejan en el HTML; esto solo sincroniza el
+  // estado que usa renderTable con lo que se ve marcado).
+  state.onlyLeagueMarket = true;
+  state.leagueMarketMode = 'free';
+  modeSel.style.display = '';
   document.getElementById('onlyLeagueMarket').addEventListener('change', e=>{
     state.onlyLeagueMarket = e.target.checked;
     modeSel.style.display = e.target.checked ? '' : 'none';
@@ -1525,7 +1528,6 @@ if(HAS_LEAGUE_MARKET){
 
 renderKPIs();
 renderSpark();
-renderChollos();
 renderRivals();
 renderMyTeams();
 renderTeams();
