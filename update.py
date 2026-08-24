@@ -444,7 +444,8 @@ def main():
         games = t.get("nextGames") or []
         if games:
             g = games[0]
-            diff = g["home"]["difficulty"]["rating"] if g["home"]["id"] == t["id"] else g["away"]["difficulty"]["rating"]
+            side = g["home"] if g["home"]["id"] == t["id"] else g["away"]
+            diff = (side.get("difficulty") or {}).get("rating")
         teams[str(t["id"])] = {"name": t["name"], "nextDiff": diff}
 
     players = []
