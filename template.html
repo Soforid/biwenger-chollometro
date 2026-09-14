@@ -222,6 +222,26 @@ a{color:inherit;}
 .rating-cell{font-weight:700;text-align:right;}
 .team-star{font-size:11px;margin-left:3px;}
 
+/* ---- diario ---- */
+.diario-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px;}
+@media (max-width:820px){ .diario-grid{grid-template-columns:1fr;} }
+.diario-card{background:var(--surface);border:1px solid var(--line);border-left:4px solid var(--team-color,var(--accent));border-radius:10px;box-shadow:var(--shadow);overflow:hidden;}
+.diario-head{padding:14px 18px;display:flex;justify-content:space-between;align-items:baseline;gap:10px;}
+.diario-head h3{margin:0;font-size:17px;color:var(--ink);}
+.diario-balance{font-family:'Oswald',sans-serif;font-weight:800;font-size:19px;white-space:nowrap;}
+.diario-balance.neg{color:var(--fall);}
+.diario-balance.pos{color:var(--rise);}
+.diario-section{padding:12px 18px 16px;border-top:1px solid var(--line);}
+.diario-section h4{margin:0 0 8px;font-size:11px;text-transform:uppercase;letter-spacing:.06em;}
+.diario-section.sell h4{color:var(--fall);}
+.diario-section.buy h4{color:var(--rise);}
+.diario-row{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;padding:7px 0;border-top:1px dashed var(--line);}
+.diario-row:first-of-type{border-top:none;padding-top:0;}
+.diario-row-name{font-weight:700;font-size:13px;display:flex;align-items:center;gap:6px;}
+.diario-row-reason{font-size:11.5px;color:var(--ink-dim);margin-top:2px;}
+.diario-row-price{font-family:'Oswald',sans-serif;font-weight:700;font-size:13px;white-space:nowrap;flex:none;padding-top:1px;}
+.diario-empty{font-size:12.5px;color:var(--ink-dim);}
+
 /* ---- controls ---- */
 .controls{
   position:sticky;top:0;z-index:4;background:var(--bg);
@@ -358,9 +378,18 @@ footer{margin-top:40px;padding-top:16px;border-top:1px solid var(--line);color:v
 
   <div class="tabs-nav" id="tabsNav">
     <button class="tab-btn active" data-tab="players">Jugadores</button>
+    <button class="tab-btn" data-tab="diario" id="tabDiarioBtn" style="display:none">Diario</button>
     <button class="tab-btn" data-tab="rivals" id="tabRivalsBtn" style="display:none">Rivales</button>
     <button class="tab-btn" data-tab="myteams" id="tabMyTeamsBtn" style="display:none">Flickwagen &amp; La Borde</button>
     <button class="tab-btn" data-tab="teams" id="tabTeamsBtn" style="display:none">Análisis de equipos</button>
+  </div>
+
+  <div class="tab-panel" id="panel-diario" style="display:none">
+    <div class="section-head">
+      <h2>Diario</h2>
+      <span class="hint">A quién vender y a quién fichar hoy, calculado con los datos de esta actualización — orientativo, no una verdad absoluta</span>
+    </div>
+    <div class="diario-grid" id="diarioGrid"></div>
   </div>
 
   <div class="tab-panel" id="panel-teams" style="display:none">
@@ -973,6 +1002,91 @@ function renderMyTeams(){
   }).join('');
 }
 
+/* ---------- Diario: venta y fichaje del día ---------- */
+// A diferencia de "Carencias" (huecos de posición) esto mira jugador a
+// jugador de tu propia plantilla: ya puesto en venta, descartado por
+// FutbolFantasy, o cobrando sitio sin apenas jugar - las tres razones reales
+// para vender que no dependen de si te falta gente en una posición.
+function pickSellCandidates(profile){
+  const roster = profile.ratedRoster.flatMap(g=>g.list);
+  return roster.map(p=>{
+    if(p.leagueForSale){
+      const days = p.saleUntil!=null ? Math.max(0, Math.ceil((p.saleUntil*1000-Date.now())/86400000)) : null;
+      const askPrice = p.askPrice!=null ? p.askPrice : p.price;
+      return {...p, sellPriority:0, sellReason:`Ya puesto en venta, pides ${euros(askPrice)}${days!=null?` · caduca en ${days} día${days===1?'':'s'}`:''}.`};
+    }
+    if(p.role==='Descarte'){
+      return {...p, sellPriority:1, sellReason:'Rol "Descarte" en FutbolFantasy - no cuenta ni de suplente.'};
+    }
+    if((p.injuryProb??100)<=20 && (p.price||0)>=300000){
+      return {...p, sellPriority:2, sellReason:`Apenas juega (${p.injuryProb??0}% de probabilidad de titular) pese a costar ${euros(p.price)}.`};
+    }
+    return null;
+  }).filter(Boolean).sort((a,b)=>a.sellPriority-b.sellPriority);
+}
+
+// Fichajes de valor dentro de lo que de verdad puedes pagar ahora mismo, sin
+// exigir que tapen un hueco de posición (a diferencia de pickStrategyTargets)
+// - con saldo negativo esa exigencia deja la lista vacía aunque haya gangas.
+function pickBuyCandidates(profile){
+  if(profile.budget<=0) return [];
+  const candidates = data.filter(d=>(d.leagueFree||d.leagueForSale) && d.role!=='Descarte' && d.team!=='Libre');
+  return candidates
+    .filter(d=>{
+      const price = d.salePrice!=null ? d.salePrice : d.price;
+      return price>0 && price<=profile.budget;
+    })
+    .filter(d=>d.score!=null && d.score>0)
+    .sort((a,b)=>b.score-a.score)
+    .slice(0,5);
+}
+
+function renderDiario(){
+  const entries = Object.values(TEAM_PROFILES);
+  if(!entries.length) return;
+  document.getElementById('tabDiarioBtn').style.display = '';
+  document.getElementById('diarioGrid').innerHTML = entries.map(({color,profile})=>{
+    const sells = pickSellCandidates(profile);
+    const sellHtml = sells.length ? sells.map(p=>`
+      <div class="diario-row">
+        <div>
+          <div class="diario-row-name"><span class="pos-chip pos-${p.pos}">${POS_LABEL[p.pos]}</span> ${p.name}</div>
+          <div class="diario-row-reason">${p.sellReason}</div>
+        </div>
+        <div class="diario-row-price">${euros(p.price)}</div>
+      </div>`).join('') : `<div class="diario-empty">Nada urgente que vender ahora mismo.</div>`;
+
+    const buys = pickBuyCandidates(profile);
+    const buyHtml = profile.budget<=0
+      ? `<div class="diario-empty">Sin presupuesto disponible (${euros(profile.budget)}) - vende antes de fichar.</div>`
+      : buys.length ? buys.map(d=>{
+          const price = d.salePrice!=null ? d.salePrice : d.price;
+          return `<div class="diario-row">
+            <div>
+              <div class="diario-row-name"><span class="pos-chip pos-${d.pos}">${POS_LABEL[d.pos]}</span> ${d.name} <span class="pteam">(${d.team})</span></div>
+              <div class="diario-row-reason">${d.role||'Sin rol'} · puja sugerida ${euros(d.suggested!=null?d.suggested:price)}</div>
+            </div>
+            <div class="diario-row-price">${euros(price)}</div>
+          </div>`;
+        }).join('') : `<div class="diario-empty">Nada dentro de presupuesto que valga la pena hoy.</div>`;
+
+    return `<div class="diario-card" style="--team-color:${color}">
+      <div class="diario-head">
+        <h3>${profile.name}</h3>
+        <span class="diario-balance ${profile.balance<0?'neg':'pos'}">${euros(profile.balance)}</span>
+      </div>
+      <div class="diario-section sell">
+        <h4>Vender</h4>
+        ${sellHtml}
+      </div>
+      <div class="diario-section buy">
+        <h4>Fichar</h4>
+        ${buyHtml}
+      </div>
+    </div>`;
+  }).join('');
+}
+
 /* ---------- Análisis de equipos: mejor once posible por formación ---------- */
 // Todas las formaciones que pediste, sin contar portero (11 = portero fijo +
 // estas 10 plazas de campo), tal y como las ofrece el propio juego.
@@ -1411,6 +1525,7 @@ renderKPIs();
 renderSpark();
 renderRivals();
 renderMyTeams();
+renderDiario();
 renderTeams();
 renderHead();
 renderPosTabs();
