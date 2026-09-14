@@ -222,18 +222,6 @@ a{color:inherit;}
 .rating-cell{font-weight:700;text-align:right;}
 .team-star{font-size:11px;margin-left:3px;}
 
-/* ---- scatter ---- */
-.scatter-card{background:var(--surface);border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow);padding:16px 18px 10px;position:relative;}
-.scatter-card canvas{width:100%;display:block;cursor:crosshair;}
-.legend{display:flex;gap:14px;flex-wrap:wrap;margin-top:6px;padding-top:10px;border-top:1px solid var(--line);}
-.legend span{font-size:11px;color:var(--ink-dim);display:inline-flex;align-items:center;gap:5px;}
-.legend i{width:9px;height:9px;border-radius:50%;display:inline-block;}
-.tooltip{
-  position:absolute;pointer-events:none;background:var(--ink);color:var(--bg);padding:6px 9px;border-radius:7px;
-  font-size:12px;line-height:1.35;opacity:0;transform:translate(-50%,-100%);transition:opacity .08s;white-space:nowrap;z-index:5;
-}
-.tooltip b{display:block;font-size:12.5px;}
-
 /* ---- controls ---- */
 .controls{
   position:sticky;top:0;z-index:4;background:var(--bg);
@@ -370,22 +358,9 @@ footer{margin-top:40px;padding-top:16px;border-top:1px solid var(--line);color:v
 
   <div class="tabs-nav" id="tabsNav">
     <button class="tab-btn active" data-tab="players">Jugadores</button>
-    <button class="tab-btn" data-tab="scatter">Mapa de valor</button>
     <button class="tab-btn" data-tab="rivals" id="tabRivalsBtn" style="display:none">Rivales</button>
     <button class="tab-btn" data-tab="myteams" id="tabMyTeamsBtn" style="display:none">Flickwagen &amp; La Borde</button>
     <button class="tab-btn" data-tab="teams" id="tabTeamsBtn" style="display:none">Análisis de equipos</button>
-  </div>
-
-  <div class="tab-panel" id="panel-scatter" style="display:none">
-    <div class="section-head">
-      <h2>Mapa de valor</h2>
-      <span class="hint" id="scatterHint">Precio (escala log) frente a puntos de la temporada pasada — abajo a la derecha = caro y flojo, arriba a la izquierda = chollo</span>
-    </div>
-    <div class="scatter-card">
-      <canvas id="scatter" height="320"></canvas>
-      <div class="tooltip" id="tip"></div>
-      <div class="legend" id="legend"></div>
-    </div>
   </div>
 
   <div class="tab-panel" id="panel-teams" style="display:none">
@@ -496,7 +471,6 @@ const HAS_LEAGUE_MARKET = data.some(d=>d.leagueFree || d.leagueForSale);
 // análisis de equipos se actualicen solos según se completan jornadas, sin
 // depender de un disparador aparte (el pipeline ya corre a diario).
 const MAX_CURRENT_PTS = Math.max(0, ...data.filter(d=>d.pos>=1 && d.pos<=4).map(d=>d.pts||0));
-const SEASON_STARTED = MAX_CURRENT_PTS > 0;
 const SEASON_PROGRESS = Math.max(0, Math.min(1, MAX_CURRENT_PTS / 60));
 
 // Percentil (0-1) de un valor dentro de su posición - mide calidad EN
@@ -574,98 +548,6 @@ function renderSpark(){
   ctx.strokeStyle = col; ctx.lineWidth=1.6; ctx.lineJoin='round'; ctx.stroke();
   ctx.fillStyle = col;
   ctx.beginPath(); ctx.arc(pts[pts.length-1][0],pts[pts.length-1][1],2.4,0,7); ctx.fill();
-}
-
-/* ---------- Scatter ---------- */
-let scatterPts = [];
-let scatterFieldUsed = 'ptsLS';
-function renderScatter(){
-  const c = document.getElementById('scatter');
-  const dpr = window.devicePixelRatio||1;
-  const w = c.clientWidth || c.parentElement.clientWidth-36;
-  const h = 320;
-  c.width = w*dpr; c.height=h*dpr;
-  c.style.height = h+'px';
-  const ctx = c.getContext('2d');
-  ctx.scale(dpr,dpr);
-  ctx.clearRect(0,0,w,h);
-
-  // En cuanto la 26/27 tiene puntos reales (se ha jugado al menos una
-  // jornada), el mapa pasa a usarlos en vez de los de la 25/26 - y sigue
-  // actualizándose solo cada día según el pipeline trae más jornadas, sin
-  // necesitar ningún disparador aparte.
-  const scatterField = SEASON_STARTED ? 'pts' : 'ptsLS';
-  scatterFieldUsed = scatterField;
-  document.getElementById('scatterHint').textContent = SEASON_STARTED
-    ? 'Precio (escala log) frente a puntos de esta temporada (26/27) — abajo a la derecha = caro y flojo, arriba a la izquierda = chollo'
-    : 'Precio (escala log) frente a puntos de la temporada pasada (25/26, la 26/27 aún no ha empezado) — abajo a la derecha = caro y flojo, arriba a la izquierda = chollo';
-  const pts = data.filter(d=>d[scatterField]!=null && d.price>0);
-  const xs = pts.map(d=>Math.log10(d.price));
-  const ys = pts.map(d=>d[scatterField]);
-  const xMin=Math.min(...xs), xMax=Math.max(...xs);
-  const yMin=Math.min(0,...ys), yMax=Math.max(...ys);
-  const padL=40,padB=26,padT=10,padR=10;
-  const X = x => padL + (x-xMin)/(xMax-xMin)*(w-padL-padR);
-  const Y = y => h-padB - (y-yMin)/(yMax-yMin)*(h-padT-padB);
-
-  const styles = getComputedStyle(document.documentElement);
-  const line = styles.getPropertyValue('--line').trim();
-  const inkDim = styles.getPropertyValue('--ink-dim').trim();
-
-  ctx.strokeStyle = line; ctx.lineWidth=1;
-  ctx.beginPath(); ctx.moveTo(padL,Y(0)); ctx.lineTo(w-padR,Y(0)); ctx.stroke();
-  ctx.fillStyle = inkDim; ctx.font='11px sans-serif'; ctx.textAlign='right';
-  [0.15e6,1e6,5e6,15e6].forEach(px=>{
-    if(Math.log10(px)<xMin || Math.log10(px)>xMax) return;
-    const x = X(Math.log10(px));
-    ctx.strokeStyle=line; ctx.beginPath(); ctx.moveTo(x,padT); ctx.lineTo(x,h-padB); ctx.stroke();
-    ctx.fillStyle=inkDim; ctx.textAlign='center';
-    ctx.fillText(px>=1e6?(px/1e6)+'M':(px/1000)+'k', x, h-padB+14);
-  });
-
-  scatterPts = [];
-  pts.forEach(d=>{
-    const x = X(Math.log10(d.price)), y = Y(d[scatterField]);
-    ctx.beginPath();
-    ctx.fillStyle = styles.getPropertyValue(POS_COLOR[d.pos].slice(4,-1)).trim() || '#999';
-    ctx.globalAlpha = 0.72;
-    ctx.arc(x,y,3.2,0,7);
-    ctx.fill();
-    scatterPts.push({x,y,d});
-  });
-  ctx.globalAlpha=1;
-}
-
-function bindScatterTooltip(){
-  const c = document.getElementById('scatter');
-  const tip = document.getElementById('tip');
-  c.addEventListener('mousemove', e=>{
-    const r = c.getBoundingClientRect();
-    const mx = e.clientX-r.left, my = e.clientY-r.top;
-    let best=null, bd=14;
-    scatterPts.forEach(p=>{
-      const dist = Math.hypot(p.x-mx,p.y-my);
-      if(dist<bd){bd=dist;best=p;}
-    });
-    if(best){
-      tip.style.opacity=1;
-      tip.style.left = best.x+'px';
-      tip.style.top = (best.y-8)+'px';
-      const ptsLabel = scatterFieldUsed==='pts' ? 'pts 26/27' : 'pts 25/26';
-      tip.innerHTML = `<b>${best.d.name}</b>${best.d.team} · ${euros(best.d.price)} · ${best.d[scatterFieldUsed]} ${ptsLabel}`;
-    } else {
-      tip.style.opacity=0;
-    }
-  });
-  c.addEventListener('mouseleave', ()=> tip.style.opacity=0);
-}
-
-function renderLegend(){
-  const el = document.getElementById('legend');
-  const styles = getComputedStyle(document.documentElement);
-  el.innerHTML = Object.entries(POS_NAME).map(([k,name])=>
-    `<span><i style="background:${styles.getPropertyValue(POS_COLOR[k].slice(4,-1)).trim()}"></i>${name}</span>`
-  ).join('');
 }
 
 /* ---------- Rivals ---------- */
@@ -1450,7 +1332,6 @@ function renderTable(){
 function switchTab(name){
   document.querySelectorAll('.tab-panel').forEach(p=>{ p.style.display = (p.id==='panel-'+name) ? '' : 'none'; });
   document.querySelectorAll('.tab-btn').forEach(b=> b.classList.toggle('active', b.dataset.tab===name));
-  if(name==='scatter') renderScatter();
 }
 document.querySelectorAll('.tab-btn').forEach(b=>{
   b.addEventListener('click', ()=> switchTab(b.dataset.tab));
@@ -1531,19 +1412,16 @@ renderSpark();
 renderRivals();
 renderMyTeams();
 renderTeams();
-renderScatter();
-bindScatterTooltip();
-renderLegend();
 renderHead();
 renderPosTabs();
 renderTeamSelect();
 renderRoleSelect();
 renderTable();
 
-window.addEventListener('resize', ()=>{ renderSpark(); renderScatter(); });
+window.addEventListener('resize', ()=>{ renderSpark(); });
 
 const mq = window.matchMedia('(prefers-color-scheme: dark)');
-mq.addEventListener('change', ()=>{ renderSpark(); renderScatter(); renderLegend(); });
-new MutationObserver(()=>{ renderSpark(); renderScatter(); renderLegend(); })
+mq.addEventListener('change', ()=>{ renderSpark(); });
+new MutationObserver(()=>{ renderSpark(); })
   .observe(document.documentElement, {attributes:true, attributeFilter:['data-theme']});
 </script>

@@ -202,8 +202,16 @@ def percentile(sorted_vals, p):
 
 def fetch_league_money(token, league_id, player_names, player_prices, player_pos):
     """Read-only: reconstructs each manager's balance since this season's reset
-    (45M start) from the public transfer feed, since Biwenger hides other
-    managers' live balance when the league's 'balance' privacy setting is on.
+    (50M start, then a one-off -5M "impost revolucionari" league tax on day
+    one nets everyone to 45M - both come through as ordinary board events, no
+    special-casing needed) from the public transfer feed, since Biwenger hides
+    other managers' live balance when the league's 'balance' privacy setting
+    is on. Verified against the one balance Biwenger DOES always expose (your
+    own, via /account) - loan payments and per-round money bonuses
+    (roundFinished) turned out to be the two board event types silently
+    missing money before this was checked; a small residual gap can remain
+    since a live league keeps transacting between the /account read and the
+    board replay finishing.
     Also collects each manager's roster and their bidding history (wins and
     losing bids), and today's live market listing, for the rival-scouting and
     buy-recommendation features. Returns a dict, or None if the league/token
@@ -248,9 +256,11 @@ def fetch_league_money(token, league_id, player_names, player_prices, player_pos
     value_ratios = []
     value_ratios_by_pos = {1: [], 2: [], 3: [], 4: [], 5: []}
     HANDLED_TYPES = {"market", "adminTransfer", "transfer", "bonus",
+                      "loan", "loanReturn", "roundFinished", "roundStarted",
                       "seasonStarted", "seasonFinished",
                       "adminText", "playerMovements", "leagueSettings",
-                      "leaguePremium", "ultra", "userLeave", "userName"}
+                      "leaguePremium", "ultra", "userLeave", "userName",
+                      "bettingPool"}
     unhandled_types = set()
 
     offset = 0
@@ -336,6 +346,30 @@ def fetch_league_money(token, league_id, player_names, player_prices, player_pos
                     uid = str(user["id"]) if user else None
                     if uid in balances:
                         balances[uid] += c.get("amount", 0)
+            elif item["type"] == "loan":
+                # El que recibe el jugador prestado paga "amount" al dueño
+                # original - "loanReturn" (cuando acaba el préstamo) no vuelve
+                # a mover dinero, así que no necesita gestionarse aparte.
+                for c in item.get("content", []):
+                    lender = c.get("from")
+                    borrower = c.get("to")
+                    amount = c.get("amount", 0)
+                    lender_id = str(lender["id"]) if lender else None
+                    borrower_id = str(borrower["id"]) if borrower else None
+                    if lender_id in balances:
+                        balances[lender_id] += amount
+                    if borrower_id in balances:
+                        balances[borrower_id] -= amount
+            elif item["type"] == "roundFinished":
+                # Cada jornada reparte un bonus en dinero real por manager
+                # (puntos, alineación ideal, MVP...), aparte de lo que ya se
+                # ve en la puntuación - sin esto el saldo reconstruido se
+                # queda corto cada vez más jornadas se juegan.
+                for r in (item.get("content") or {}).get("results", []):
+                    user = r.get("user")
+                    uid = str(user["id"]) if user else None
+                    if uid in balances:
+                        balances[uid] += r.get("bonus", 0)
         if done:
             break
         offset += limit
