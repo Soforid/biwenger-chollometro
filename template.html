@@ -1088,20 +1088,64 @@ function renderMyTeams(){
 function isShortTermInjuryReturn(d){
   return !!(d.injuryStatusTxt && /(confirmada|duda)\s+para\s+la\s+jornada\s+\d+/i.test(d.injuryStatusTxt));
 }
+
+// El motivo real para vender, no solo "ya está puesto en venta" - se evalúa
+// para TODOS los de la plantilla (esté ya listado o no), en orden de lo más
+// a lo menos contundente, y se para en el primero que encaje: no tiene
+// sentido apilar cinco razones flojas sobre un mismo jugador.
+function sellSignal(p){
+  if(p.role==='Descarte'){
+    return {priority:1, reason:'Descarte según FutbolFantasy - fuera de los planes del equipo.'};
+  }
+  if((p.injuryProb??100)<=20 && (p.price||0)>=300000){
+    return {priority:2, reason:`Apenas juega (${p.injuryProb??0}% de probabilidad de titular) pese a costar ${euros(p.price)}.`};
+  }
+  // Valoración externa (Cuatro Picas) que coincide en no fiarse - una
+  // segunda opinión que no sale de nuestro propio modelo.
+  if(p.cuatroRating!=null && p.cuatroRating<35){
+    return {priority:3, reason:`Cuatro Picas lo valora solo un ${p.cuatroRating}% recomendable para esta temporada.`};
+  }
+  // Rinde muy por debajo de lo que cuesta AHORA MISMO: percentil de sus
+  // últimos partidos muy por debajo del percentil de su propio precio dentro
+  // de su posición - un precio de gama alta sin actuaciones que lo sostengan.
+  const recentPct = recentFormFrac(p);
+  const pricePct = percentileOf(p.pos, p.price, x=>x.price);
+  if(pricePct - recentPct > 0.35 && recentPct < 0.4 && pricePct > 0.4){
+    const list = Array.isArray(p.fitness) ? p.fitness : [];
+    const vals = list.slice(0,3).map(fitnessPts).filter(v=>v!=null);
+    const avgTxt = vals.length ? `media de ${(vals.reduce((s,v)=>s+v,0)/vals.length).toFixed(1)} pts en sus últimos partidos` : 'sin puntos recientes que lo respalden';
+    return {priority:4, reason:`Precio de gama alta en su posición pero ${avgTxt} - está costando más de lo que rinde ahora mismo.`};
+  }
+  // Etiqueta fuerte (Clave/Importante/Dios) que ya no se corresponde con sus
+  // opciones reales de jugar - pinta a que ha perdido la titularidad aunque
+  // el rol todavía no se lo haya actualizado.
+  if((p.injuryProb??100)<=40 && STRONG_ROLES.has(p.role)){
+    return {priority:5, reason:`Etiquetado como "${p.role}" pero solo ${p.injuryProb}% de opciones de jugar ahora mismo - pinta a que ha perdido la titularidad.`};
+  }
+  // Única señal de tendencia de precio que tenemos por jugador es la de HOY
+  // (Biwenger no da histórico) - una caída fuerte en un solo día ya es una
+  // señal real de que el mercado se está moviendo en su contra.
+  if(p.price>0 && (p.inc/p.price)<=-0.02){
+    return {priority:6, reason:`Cayendo con fuerza hoy (${eurosShort(p.inc)}) - el mercado ya está reaccionando a algo.`};
+  }
+  return null;
+}
+
 function pickSellCandidates(profile){
   const roster = profile.ratedRoster.flatMap(g=>g.list);
   return roster.map(p=>{
+    if(isShortTermInjuryReturn(p) && (p.injuryProb??100)<=20) return null; // va a "Aguanta", no a "Vender"
+    const signal = sellSignal(p);
     if(p.leagueForSale){
       const days = p.saleUntil!=null ? Math.max(0, Math.ceil((p.saleUntil*1000-Date.now())/86400000)) : null;
       const askPrice = p.askPrice!=null ? p.askPrice : p.price;
-      return {...p, sellPriority:0, sellReason:`Ya puesto en venta, pides ${euros(askPrice)}${days!=null?` · caduca en ${days} día${days===1?'':'s'}`:''}.`};
+      const expiryTxt = days!=null ? ` Caduca en ${days} día${days===1?'':'s'}.` : '';
+      const reason = signal
+        ? `${signal.reason} Ya puesto en venta (pides ${euros(askPrice)}).${expiryTxt}`
+        : `Ya puesto en venta, pides ${euros(askPrice)}.${expiryTxt}`;
+      return {...p, sellPriority:0, sellReason:reason};
     }
-    if(p.role==='Descarte'){
-      return {...p, sellPriority:1, sellReason:'Rol "Descarte" en FutbolFantasy - no cuenta ni de suplente.'};
-    }
-    if((p.injuryProb??100)<=20 && (p.price||0)>=300000 && !isShortTermInjuryReturn(p)){
-      return {...p, sellPriority:2, sellReason:`Apenas juega (${p.injuryProb??0}% de probabilidad de titular) pese a costar ${euros(p.price)}.`};
-    }
+    if(signal) return {...p, sellPriority:signal.priority, sellReason:signal.reason};
     return null;
   }).filter(Boolean).sort((a,b)=>a.sellPriority-b.sellPriority);
 }
@@ -1188,18 +1232,33 @@ function renderDiario(){
     const extraSells = sells.filter(p=>p.sellPriority>0);
     const extraProceeds = extraSells.reduce((s,p)=>s+(p.price||0),0);
     const budgetNow = profile.budget;
-    const budgetWithSales = budgetNow + extraProceeds;
 
     const buysNow = pickBuyCandidates(budgetNow);
-    const buysNowIds = new Set(buysNow.map(d=>d.id));
-    const buysWithSales = extraProceeds>0 ? pickBuyCandidates(budgetWithSales).filter(d=>!buysNowIds.has(d.id)) : [];
-
+    const shownIds = new Set(buysNow.map(d=>d.id));
     const nowLabel = `Con lo que tienes ahora (${euros(budgetNow)})`;
     const nowHtml = buysNow.length ? buysNow.map(buyRowHtml).join('')
       : `<div class="diario-empty">Nada dentro de presupuesto que valga la pena hoy.</div>`;
 
+    // Si vas a vender igualmente tu jugador más valioso (ver "solo con vender
+    // a X" arriba), lo realista es contar con lo que de verdad se saca por
+    // él - su VALOR DE MERCADO actual, no el precio pedido (que puede pedir
+    // más de lo que acabe cobrando) - para no prometer más presupuesto del
+    // que habrá de verdad.
+    let vmBlockHtml = '';
+    if(soloFix){
+      const budgetAtVM = profile.balance + soloFix.price;
+      const buysAtVM = pickBuyCandidates(budgetAtVM).filter(d=>!shownIds.has(d.id));
+      buysAtVM.forEach(d=>shownIds.add(d.id));
+      vmBlockHtml = `
+        <div class="diario-subhead">Vendiendo a ${soloFix.name} a su valor de mercado (${euros(soloFix.price)}) → presupuesto ${euros(budgetAtVM)}</div>
+        ${buysAtVM.length ? buysAtVM.map(buyRowHtml).join('')
+          : `<div class="diario-empty">Ni así se desbloquea nada mejor que lo de arriba.</div>`}`;
+    }
+
     let extraBlockHtml = '';
     if(extraProceeds>0){
+      const budgetWithSales = budgetNow + extraProceeds;
+      const buysWithSales = pickBuyCandidates(budgetWithSales).filter(d=>!shownIds.has(d.id));
       const namesTxt = extraSells.map(p=>p.name).join(', ');
       extraBlockHtml = `
         <div class="diario-subhead">Vendiendo también a ${namesTxt} (+${euros(extraProceeds)} → ${euros(budgetWithSales)})</div>
@@ -1207,9 +1266,9 @@ function renderDiario(){
           : `<div class="diario-empty">Ni así se desbloquea nada mejor que lo de arriba.</div>`}`;
     }
 
-    const buyHtml = budgetNow<=0 && extraProceeds<=0
+    const buyHtml = budgetNow<=0 && !soloFix && extraProceeds<=0
       ? `<div class="diario-empty">Sin presupuesto disponible (${euros(budgetNow)}) - vende antes de fichar.</div>`
-      : `<div class="diario-subhead">${nowLabel}</div>${nowHtml}${extraBlockHtml}`;
+      : `<div class="diario-subhead">${nowLabel}</div>${nowHtml}${vmBlockHtml}${extraBlockHtml}`;
 
     return `<div class="diario-card" style="--team-color:${color}">
       <div class="diario-head">
