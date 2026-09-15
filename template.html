@@ -241,6 +241,8 @@ a{color:inherit;}
 .diario-row-reason{font-size:11.5px;color:var(--ink-dim);margin-top:2px;}
 .diario-row-price{font-family:'Oswald',sans-serif;font-weight:700;font-size:13px;white-space:nowrap;flex:none;padding-top:1px;}
 .diario-empty{font-size:12.5px;color:var(--ink-dim);}
+.diario-subhead{font-size:11px;color:var(--ink-dim);font-weight:600;margin:12px 0 4px;}
+.diario-subhead:first-child{margin-top:0;}
 
 /* ---- controls ---- */
 .controls{
@@ -466,6 +468,7 @@ const ROSTERS = __ROSTERS__; // {userId: [playerId,...]}
 const PAID_PRICES = __PAID_PRICES__; // {userId: {playerId: amountPaid}} solo para jugadores que siguen en su plantilla
 const BID_MEDIAN_BY_POS = __BID_MEDIAN_BY_POS__; // {"1":1.08,"2":1.14,...} real median winning_amount/value per position this season (POR/DEF/CEN/DEL/ENT), excluding sub-200k filler buys
 const BID_SPREAD = __BID_SPREAD__; // p75-minus-median gap of this season's purchases: how much further a genuinely contested listing goes, on top of its position's median
+const NEXT_ROUND_KICKOFF = __NEXT_ROUND_KICKOFF__; // unix seconds of the first match of the next jornada across LaLiga, or null
 
 const POS_LABEL = {1:'POR',2:'DEF',3:'CEN',4:'DEL',5:'ENT'};
 const POS_NAME = {1:'Portero',2:'Defensa',3:'Centrocampista',4:'Delantero',5:'Entrenador'};
@@ -816,15 +819,78 @@ function momentumFactor(d){
   return 1 + Math.min(pct*20, 0.6); // subiendo -> refuerzo, tope +60%
 }
 
+// Cuánto se paga de más NO es lo mismo para un jugador de 500k que uno de
+// 20M - con los fichajes reales de esta temporada agrupados por franja de
+// precio (dentro de cada posición por separado, para no confundir "caro"
+// con "delantero"), el sobreprecio mediano baja con claridad al subir de
+// franja: ~1.13x por debajo de 5M, ~1.06x entre 5-15M, ~1.05x por encima de
+// 15M. Interpolado en escala logarítmica de precio y normalizado contra la
+// franja 1-5M (la más numerosa, y donde ya está centrado BID_MEDIAN_BY_POS)
+// para no contar dos veces el efecto de posición/mediana.
+const PRICE_TIER_POINTS = [
+  [Math.log10(300000), 1.135],
+  [Math.log10(3000000), 1.127],
+  [Math.log10(10000000), 1.059],
+  [Math.log10(20000000), 1.045],
+];
+const PRICE_TIER_REF = 1.127; // mediana real de la franja 1-5M€, la de referencia
+function priceTierFactor(price){
+  if(!(price>0)) return 1;
+  const x = Math.log10(price);
+  const pts = PRICE_TIER_POINTS;
+  if(x<=pts[0][0]) return pts[0][1]/PRICE_TIER_REF;
+  if(x>=pts[pts.length-1][0]) return pts[pts.length-1][1]/PRICE_TIER_REF;
+  for(let i=0;i<pts.length-1;i++){
+    const [x0,y0]=pts[i], [x1,y1]=pts[i+1];
+    if(x>=x0 && x<=x1){
+      const t=(x-x0)/(x1-x0);
+      return (y0+(y1-y0)*t)/PRICE_TIER_REF;
+    }
+  }
+  return 1;
+}
+
+// Cuánto falta para el primer partido de la próxima jornada también deja un
+// patrón real en lo que se paga, aunque más suave que el de precio: mediana
+// ~1.10x con la jornada a 0-2 días vista, ~1.11-1.12x a 2-7 días, ~1.16x con
+// una semana o más por delante. Contraintuitivo (uno esperaría más urgencia
+// cerca del pitido) pero es lo que dicen los datos, así que se usa tal cual
+// - normalizado igual que arriba contra la franja de referencia 1-5M€.
+const ROUND_TIMING_POINTS = [
+  [0, 1.101], [1.5, 1.098], [3, 1.113], [5.5, 1.122], [7, 1.160],
+];
+function daysToNextRound(){
+  if(NEXT_ROUND_KICKOFF==null) return null;
+  return (NEXT_ROUND_KICKOFF*1000 - Date.now()) / 86400000;
+}
+function roundTimingFactor(){
+  const days = daysToNextRound();
+  if(days==null || days<0) return 1; // sin fecha, o la jornada ya ha empezado - no se penaliza ni se prima
+  const pts = ROUND_TIMING_POINTS;
+  if(days<=pts[0][0]) return pts[0][1]/PRICE_TIER_REF;
+  if(days>=pts[pts.length-1][0]) return pts[pts.length-1][1]/PRICE_TIER_REF;
+  for(let i=0;i<pts.length-1;i++){
+    const [x0,y0]=pts[i], [x1,y1]=pts[i+1];
+    if(days>=x0 && days<=x1){
+      const t=(days-x0)/(x1-x0);
+      return (y0+(y1-y0)*t)/PRICE_TIER_REF;
+    }
+  }
+  return 1;
+}
+
 function demandRatio(d){
   const posMedian = BID_MEDIAN_BY_POS[d.pos] ?? BID_MEDIAN_BY_POS[3] ?? 1.10;
   // Toda la prima sobre el precio -tanto la típica de su posición como el
   // extra por rol/titularidad/competencia real- se escala por el momentum:
   // un jugador cuyo precio cae no se libra de perder también la prima
   // "de base" solo porque su posición suele venderse algo por encima de
-  // valor en general.
+  // valor en general. La franja de precio y la cercanía de la próxima
+  // jornada ajustan esa misma prima un poco más, en la dirección que de
+  // verdad marcan los fichajes reales de esta temporada.
   const structuralPremium = (posMedian - 1) + roleProb01(d) * BID_SPREAD * competitionFactor(d);
-  return 1 + structuralPremium * momentumFactor(d);
+  const timing = priceTierFactor(d.price) * roundTimingFactor();
+  return 1 + structuralPremium * momentumFactor(d) * timing;
 }
 // Fusionado dentro de "Todos los jugadores": estos campos se calculan para
 // todo jugador disponible en el mercado de tu liga (el resto se quedan a
@@ -1025,20 +1091,34 @@ function pickSellCandidates(profile){
   }).filter(Boolean).sort((a,b)=>a.sellPriority-b.sellPriority);
 }
 
-// Fichajes de valor dentro de lo que de verdad puedes pagar ahora mismo, sin
-// exigir que tapen un hueco de posición (a diferencia de pickStrategyTargets)
-// - con saldo negativo esa exigencia deja la lista vacía aunque haya gangas.
-function pickBuyCandidates(profile){
-  if(profile.budget<=0) return [];
+// Fichajes de valor dentro de un presupuesto dado, sin exigir que tapen un
+// hueco de posición (a diferencia de pickStrategyTargets) - con saldo
+// negativo esa exigencia deja la lista vacía aunque haya gangas. Recibe el
+// presupuesto como parámetro (no lo saca de profile.budget) para poder
+// calcularlo dos veces: con lo que hay hoy y con lo que quedaría vendiendo
+// también lo recomendado en "Vender".
+function pickBuyCandidates(budget){
+  if(budget<=0) return [];
   const candidates = data.filter(d=>(d.leagueFree||d.leagueForSale) && d.role!=='Descarte' && d.team!=='Libre');
   return candidates
     .filter(d=>{
       const price = d.salePrice!=null ? d.salePrice : d.price;
-      return price>0 && price<=profile.budget;
+      return price>0 && price<=budget;
     })
     .filter(d=>d.score!=null && d.score>0)
     .sort((a,b)=>b.score-a.score)
     .slice(0,5);
+}
+
+function buyRowHtml(d){
+  const price = d.salePrice!=null ? d.salePrice : d.price;
+  return `<div class="diario-row">
+    <div>
+      <div class="diario-row-name"><span class="pos-chip pos-${d.pos}">${POS_LABEL[d.pos]}</span> ${d.name} <span class="pteam">(${d.team})</span></div>
+      <div class="diario-row-reason">${d.role||'Sin rol'} · puja estimada ${euros(d.suggested!=null?d.suggested:price)}</div>
+    </div>
+    <div class="diario-row-price">${euros(price)}</div>
+  </div>`;
 }
 
 function renderDiario(){
@@ -1056,19 +1136,34 @@ function renderDiario(){
         <div class="diario-row-price">${euros(p.price)}</div>
       </div>`).join('') : `<div class="diario-empty">Nada urgente que vender ahora mismo.</div>`;
 
-    const buys = pickBuyCandidates(profile);
-    const buyHtml = profile.budget<=0
-      ? `<div class="diario-empty">Sin presupuesto disponible (${euros(profile.budget)}) - vende antes de fichar.</div>`
-      : buys.length ? buys.map(d=>{
-          const price = d.salePrice!=null ? d.salePrice : d.price;
-          return `<div class="diario-row">
-            <div>
-              <div class="diario-row-name"><span class="pos-chip pos-${d.pos}">${POS_LABEL[d.pos]}</span> ${d.name} <span class="pteam">(${d.team})</span></div>
-              <div class="diario-row-reason">${d.role||'Sin rol'} · puja sugerida ${euros(d.suggested!=null?d.suggested:price)}</div>
-            </div>
-            <div class="diario-row-price">${euros(price)}</div>
-          </div>`;
-        }).join('') : `<div class="diario-empty">Nada dentro de presupuesto que valga la pena hoy.</div>`;
+    // Lo ya puesto en venta (sellPriority 0) ya está sumado en profile.budget
+    // vía "pending" - solo lo NO listado todavía suma presupuesto extra de
+    // verdad nuevo si además se vende.
+    const extraSells = sells.filter(p=>p.sellPriority>0);
+    const extraProceeds = extraSells.reduce((s,p)=>s+(p.price||0),0);
+    const budgetNow = profile.budget;
+    const budgetWithSales = budgetNow + extraProceeds;
+
+    const buysNow = pickBuyCandidates(budgetNow);
+    const buysNowIds = new Set(buysNow.map(d=>d.id));
+    const buysWithSales = extraProceeds>0 ? pickBuyCandidates(budgetWithSales).filter(d=>!buysNowIds.has(d.id)) : [];
+
+    const nowLabel = `Con lo que tienes ahora (${euros(budgetNow)})`;
+    const nowHtml = buysNow.length ? buysNow.map(buyRowHtml).join('')
+      : `<div class="diario-empty">Nada dentro de presupuesto que valga la pena hoy.</div>`;
+
+    let extraBlockHtml = '';
+    if(extraProceeds>0){
+      const namesTxt = extraSells.map(p=>p.name).join(', ');
+      extraBlockHtml = `
+        <div class="diario-subhead">Vendiendo también a ${namesTxt} (+${euros(extraProceeds)} → ${euros(budgetWithSales)})</div>
+        ${buysWithSales.length ? buysWithSales.map(buyRowHtml).join('')
+          : `<div class="diario-empty">Ni así se desbloquea nada mejor que lo de arriba.</div>`}`;
+    }
+
+    const buyHtml = budgetNow<=0 && extraProceeds<=0
+      ? `<div class="diario-empty">Sin presupuesto disponible (${euros(budgetNow)}) - vende antes de fichar.</div>`
+      : `<div class="diario-subhead">${nowLabel}</div>${nowHtml}${extraBlockHtml}`;
 
     return `<div class="diario-card" style="--team-color:${color}">
       <div class="diario-head">

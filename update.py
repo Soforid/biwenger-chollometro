@@ -473,6 +473,7 @@ def main():
     biw_market = json.loads(fetch("https://cf.biwenger.com/api/v2/competitions/la-liga/market?interval=day&includeValues=true"))["data"]
 
     teams = {}
+    next_kickoffs = []
     for tid, t in biw_data["teams"].items():
         diff = None
         games = t.get("nextGames") or []
@@ -480,7 +481,13 @@ def main():
             g = games[0]
             side = g["home"] if g["home"]["id"] == t["id"] else g["away"]
             diff = (side.get("difficulty") or {}).get("rating")
+            if g.get("date"):
+                next_kickoffs.append(g["date"])
         teams[str(t["id"])] = {"name": t["name"], "nextDiff": diff}
+    # Primer partido de la próxima jornada en todo LaLiga - usado en la puja
+    # sugerida para saber si falta un día o una semana, no solo la posición
+    # y el rol del jugador.
+    next_round_kickoff = min(next_kickoffs) if next_kickoffs else None
 
     players = []
     for pid, p in biw_data["players"].items():
@@ -771,6 +778,7 @@ def main():
             .replace("__PAID_PRICES__", paid_json)
             .replace("__BID_MEDIAN_BY_POS__", json.dumps({str(k): v for k, v in bid_median_by_pos.items()}))
             .replace("__BID_SPREAD__", json.dumps(round(bid_spread, 3)))
+            .replace("__NEXT_ROUND_KICKOFF__", json.dumps(next_round_kickoff))
             .replace("__BUILD_TIME__", build_time))
     print(f"  -> build time stamp: {build_time}")
     out_path = ROOT / "biwenger.html"
