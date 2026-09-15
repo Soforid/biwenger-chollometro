@@ -235,6 +235,8 @@ a{color:inherit;}
 .diario-section h4{margin:0 0 8px;font-size:11px;text-transform:uppercase;letter-spacing:.06em;}
 .diario-section.sell h4{color:var(--fall);}
 .diario-section.buy h4{color:var(--rise);}
+.diario-section.hold h4{color:var(--accent);}
+.diario-callout{background:var(--rise-bg);color:var(--rise);border-radius:8px;padding:8px 10px;font-size:12px;font-weight:600;margin-bottom:8px;}
 .diario-row{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;padding:7px 0;border-top:1px dashed var(--line);}
 .diario-row:first-of-type{border-top:none;padding-top:0;}
 .diario-row-name{font-weight:700;font-size:13px;display:flex;align-items:center;gap:6px;}
@@ -749,7 +751,12 @@ function pickScore(d){
   // La probabilidad pesa como multiplicador directo (no amortiguado): un
   // jugador con pocas opciones de jugar aporta poco aunque su ratio histórico
   // de puntos/precio sea alto, porque probablemente se quede en el banquillo.
-  const prob = d.injuryProb!=null ? d.injuryProb/100 : 0.6;
+  // Excepción real: una baja con vuelta acotada a una jornada concreta ("Baja
+  // confirmada para la jornada 6") no es lo mismo que un suplente permanente
+  // con 0% - tratarla como tal escondería justo los chollos que se generan
+  // cuando el mercado no ha reaccionado todavía a que está a punto de volver.
+  let prob = d.injuryProb!=null ? d.injuryProb/100 : 0.6;
+  if(isShortTermInjuryReturn(d)) prob = Math.max(prob, 0.5);
   return d.value * roleWeight(d.role) * prob * fixtureWeight(d.nextDiff);
 }
 
@@ -1073,6 +1080,14 @@ function renderMyTeams(){
 // jugador de tu propia plantilla: ya puesto en venta, descartado por
 // FutbolFantasy, o cobrando sitio sin apenas jugar - las tres razones reales
 // para vender que no dependen de si te falta gente en una posición.
+// "Apenas juega" NO debe disparar la venta cuando la razón es una lesión con
+// vuelta acotada a una jornada concreta (el parte médico de FutbolFantasy lo
+// dice tal cual: "Baja confirmada para la jornada 6", "Duda para la jornada
+// 7"...) - eso es justo lo contrario de un suplente permanente, y venderlo
+// ahora es malvenderlo justo antes de que vuelva a valer lo que vale.
+function isShortTermInjuryReturn(d){
+  return !!(d.injuryStatusTxt && /(confirmada|duda)\s+para\s+la\s+jornada\s+\d+/i.test(d.injuryStatusTxt));
+}
 function pickSellCandidates(profile){
   const roster = profile.ratedRoster.flatMap(g=>g.list);
   return roster.map(p=>{
@@ -1084,11 +1099,19 @@ function pickSellCandidates(profile){
     if(p.role==='Descarte'){
       return {...p, sellPriority:1, sellReason:'Rol "Descarte" en FutbolFantasy - no cuenta ni de suplente.'};
     }
-    if((p.injuryProb??100)<=20 && (p.price||0)>=300000){
+    if((p.injuryProb??100)<=20 && (p.price||0)>=300000 && !isShortTermInjuryReturn(p)){
       return {...p, sellPriority:2, sellReason:`Apenas juega (${p.injuryProb??0}% de probabilidad de titular) pese a costar ${euros(p.price)}.`};
     }
     return null;
   }).filter(Boolean).sort((a,b)=>a.sellPriority-b.sellPriority);
+}
+
+// El otro lado de lo mismo: jugadores tuyos que HOY parecen inútiles (0-20%
+// de jugar) pero por una lesión con vuelta ya acotada por el parte médico,
+// no porque no tengan sitio - vale la pena aguantarlos en vez de malvenderlos.
+function pickHoldCandidates(profile){
+  const roster = profile.ratedRoster.flatMap(g=>g.list);
+  return roster.filter(p=>!p.leagueForSale && (p.injuryProb??100)<=20 && isShortTermInjuryReturn(p));
 }
 
 // Fichajes de valor dentro de un presupuesto dado, sin exigir que tapen un
@@ -1112,10 +1135,11 @@ function pickBuyCandidates(budget){
 
 function buyRowHtml(d){
   const price = d.salePrice!=null ? d.salePrice : d.price;
+  const chollo = isShortTermInjuryReturn(d) ? ` · ${d.injuryStatusTxt} - posible chollo, el mercado igual no ha reaccionado aún` : '';
   return `<div class="diario-row">
     <div>
       <div class="diario-row-name"><span class="pos-chip pos-${d.pos}">${POS_LABEL[d.pos]}</span> ${d.name} <span class="pteam">(${d.team})</span></div>
-      <div class="diario-row-reason">${d.role||'Sin rol'} · puja estimada ${euros(d.suggested!=null?d.suggested:price)}</div>
+      <div class="diario-row-reason">${d.role||'Sin rol'} · puja estimada ${euros(d.suggested!=null?d.suggested:price)}${chollo}</div>
     </div>
     <div class="diario-row-price">${euros(price)}</div>
   </div>`;
@@ -1127,6 +1151,18 @@ function renderDiario(){
   document.getElementById('tabDiarioBtn').style.display = '';
   document.getElementById('diarioGrid').innerHTML = entries.map(({color,profile})=>{
     const sells = pickSellCandidates(profile);
+    // Si con vender UNA sola de las que ya están puestas en venta el saldo
+    // deja de ser negativo, decirlo tal cual - trocear la solución entre
+    // varios jugadores buenos cuando uno solo ya la resuelve no tiene sentido
+    // (peor plantilla por el mismo dinero, sin ninguna ventaja real).
+    const soloFix = sells
+      .filter(p=>p.sellPriority===0)
+      .map(p=>({...p, amt: p.askPrice!=null?p.askPrice:p.price}))
+      .filter(p=>profile.balance<0 && profile.balance+p.amt>=0)
+      .sort((a,b)=>a.amt-b.amt)[0];
+    const soloFixHtml = soloFix
+      ? `<div class="diario-callout">Con vender solo a <b>${soloFix.name}</b> (${euros(soloFix.amt)}) ya sales de números rojos - no hace falta tocar el resto.</div>`
+      : '';
     const sellHtml = sells.length ? sells.map(p=>`
       <div class="diario-row">
         <div>
@@ -1135,6 +1171,16 @@ function renderDiario(){
         </div>
         <div class="diario-row-price">${euros(p.price)}</div>
       </div>`).join('') : `<div class="diario-empty">Nada urgente que vender ahora mismo.</div>`;
+
+    const holds = pickHoldCandidates(profile);
+    const holdHtml = holds.length ? holds.map(p=>`
+      <div class="diario-row">
+        <div>
+          <div class="diario-row-name"><span class="pos-chip pos-${p.pos}">${POS_LABEL[p.pos]}</span> ${p.name}</div>
+          <div class="diario-row-reason">${p.injuryStatusTxt} - no es un suplente permanente, no lo vendas todavía.</div>
+        </div>
+        <div class="diario-row-price">${euros(p.price)}</div>
+      </div>`).join('') : '';
 
     // Lo ya puesto en venta (sellPriority 0) ya está sumado en profile.budget
     // vía "pending" - solo lo NO listado todavía suma presupuesto extra de
@@ -1172,8 +1218,14 @@ function renderDiario(){
       </div>
       <div class="diario-section sell">
         <h4>Vender</h4>
+        ${soloFixHtml}
         ${sellHtml}
       </div>
+      ${holds.length ? `
+      <div class="diario-section hold">
+        <h4>Aguanta</h4>
+        ${holdHtml}
+      </div>` : ''}
       <div class="diario-section buy">
         <h4>Fichar</h4>
         ${buyHtml}
