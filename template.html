@@ -1164,15 +1164,32 @@ function pickHoldCandidates(profile){
 // presupuesto como parámetro (no lo saca de profile.budget) para poder
 // calcularlo dos veces: con lo que hay hoy y con lo que quedaría vendiendo
 // también lo recomendado en "Vender".
+// Solo libres de la máquina: un fichaje a otro manager depende de que él
+// quiera vender en esas condiciones, mientras que un libre lo puedes fichar
+// ya mismo sin más - las ofertas de otros managers con problemas de dinero
+// de verdad tienen su propio apartado más abajo (pickDistressBuys).
 function pickBuyCandidates(budget){
   if(budget<=0) return [];
-  const candidates = data.filter(d=>(d.leagueFree||d.leagueForSale) && d.role!=='Descarte' && d.team!=='Libre');
+  const candidates = data.filter(d=>d.leagueFree && d.role!=='Descarte' && d.team!=='Libre');
   return candidates
-    .filter(d=>{
-      const price = d.salePrice!=null ? d.salePrice : d.price;
-      return price>0 && price<=budget;
-    })
+    .filter(d=>d.price>0 && d.price<=budget)
     .filter(d=>d.score!=null && d.score>0)
+    .sort((a,b)=>b.score-a.score)
+    .slice(0,5);
+}
+
+// Un rival en números rojos tiene que vender sí o sí, y a veces lo pone a un
+// precio que ya nos conviene a nosotros - "le conviene a él" no es lo mismo
+// que "es bueno para mí", así que además de rankearlo por lo bueno que es el
+// jugador (pickScore, igual que arriba) exigimos que pida como mucho lo que
+// nuestro propio modelo considera una puja justa (askPrice <= suggested):
+// una ganga real, no solo una venta forzada a precio inflado.
+function pickDistressBuys(profile){
+  const distressed = new Set(RIVALS.filter(r=>r[1]!==profile.name && r[2]<0).map(r=>r[1]));
+  if(!distressed.size) return [];
+  return data.filter(d=>d.leagueForSale && distressed.has(d.saleSeller) && d.role!=='Descarte' && d.team!=='Libre')
+    .filter(d=>d.score!=null && d.score>0)
+    .filter(d=>d.askPrice!=null && d.suggested!=null && d.askPrice<=d.suggested)
     .sort((a,b)=>b.score-a.score)
     .slice(0,5);
 }
@@ -1184,6 +1201,18 @@ function buyRowHtml(d){
     <div>
       <div class="diario-row-name"><span class="pos-chip pos-${d.pos}">${POS_LABEL[d.pos]}</span> ${d.name} <span class="pteam">(${d.team})</span></div>
       <div class="diario-row-reason">${d.role||'Sin rol'} · puja estimada ${euros(d.suggested!=null?d.suggested:price)}${chollo}</div>
+    </div>
+    <div class="diario-row-price">${euros(price)}</div>
+  </div>`;
+}
+
+function distressRowHtml(d, budget){
+  const price = d.askPrice!=null ? d.askPrice : d.price;
+  const affordable = price<=budget;
+  return `<div class="diario-row">
+    <div>
+      <div class="diario-row-name"><span class="pos-chip pos-${d.pos}">${POS_LABEL[d.pos]}</span> ${d.name} <span class="pteam">(${d.team})</span></div>
+      <div class="diario-row-reason">${d.seller} está en números rojos y pide ${euros(price)}${d.suggested!=null?` (justo lo consideramos ${euros(d.suggested)})`:''}${affordable?'':' · no te llega el presupuesto todavía'}</div>
     </div>
     <div class="diario-row-price">${euros(price)}</div>
   </div>`;
@@ -1270,6 +1299,16 @@ function renderDiario(){
       ? `<div class="diario-empty">Sin presupuesto disponible (${euros(budgetNow)}) - vende antes de fichar.</div>`
       : `<div class="diario-subhead">${nowLabel}</div>${nowHtml}${vmBlockHtml}${extraBlockHtml}`;
 
+    // Aparte de los tres escenarios de presupuesto: rivales que están en
+    // números rojos y por tanto tienen que vender sí o sí, con un jugador en
+    // venta que además pide igual o menos de lo que nuestro propio modelo ya
+    // considera una puja justa - no solo "le viene bien a él", sino que de
+    // verdad nos conviene a nosotros.
+    const distressBuys = pickDistressBuys(profile);
+    const distressHtml = distressBuys.length
+      ? `<div class="diario-subhead">Rivales en números rojos, jugando a lo que piden</div>${distressBuys.map(d=>distressRowHtml(d,budgetNow)).join('')}`
+      : '';
+
     return `<div class="diario-card" style="--team-color:${color}">
       <div class="diario-head">
         <h3>${profile.name}</h3>
@@ -1287,6 +1326,7 @@ function renderDiario(){
       </div>` : ''}
       <div class="diario-section buy">
         <h4>Fichar</h4>
+        ${distressHtml}
         ${buyHtml}
       </div>
     </div>`;
