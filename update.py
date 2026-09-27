@@ -527,8 +527,15 @@ def main():
     header_re = re.compile(
         r'<img width="30" class="mr-2" src="https://static\.futbolfantasy\.com/uploads/images/(?P<img>[a-z0-9]+)\.png">\s*(?P<cat>[^<]+?)\s*</header>',
         re.S)
+    # FutbolFantasy player links used to be bare (".../jugadores/<slug>") and
+    # carried the role text in a sibling <span class="comentario">; the site
+    # now appends a season segment to the URL (".../jugadores/<slug>/laliga-
+    # 26-27") and dropped that span in favour of a free-text "observaciones"
+    # blurb. The season suffix is matched but not captured, and made optional
+    # so this survives either markup; "pos" was never actually used below
+    # (only "cat"/"slug" are), so it's dropped rather than chased.
     player_re = re.compile(
-        r'href="https://www\.futbolfantasy\.com/jugadores/(?P<slug>[a-z0-9\-]+)" class="jugador">\s*(?P<name>[^<]+?)\s*</a>\s*<span class="comentario">\s*<span>(?P<pos>[^<]*)</span>',
+        r'href="https://www\.futbolfantasy\.com/jugadores/(?P<slug>[a-z0-9\-]+)(?:/[a-z0-9\-]+)?" class="jugador">\s*(?P<name>[^<]+?)\s*</a>',
         re.S)
     end_marker_re = re.compile(r"Once tipo y mapa rotacional")
 
