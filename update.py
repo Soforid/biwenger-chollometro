@@ -263,10 +263,20 @@ def fetch_league_money(token, league_id, player_names, player_prices, player_pos
                       "bettingPool"}
     unhandled_types = set()
 
+    # Safety cap, not a real limit: the board is read newest-first until a
+    # seasonStarted/seasonFinished marker is hit, which is the actual end of
+    # this season's history. A hardcoded low cap here (previously 400) used to
+    # cut the read off BEFORE reaching that marker once the league had more
+    # than ~20 pages of activity - silently dropping the oldest events (early
+    # transfers, the starting tax) from every manager's balance with no
+    # warning, since `done` was never set True. Confirmed against the token
+    # owner's real balance: this alone was a multi-million-euro error that
+    # got worse every week as more board events accumulated. 4000 is just a
+    # runaway-loop guard; a real season should hit the marker well before that.
     offset = 0
     limit = 20
     done = False
-    while not done and offset < 400:
+    while not done and offset < 4000:
         page = fetch_auth(f"https://biwenger.as.com/api/v2/league/{league_id}/board?offset={offset}&limit={limit}",
                            token, league_id, my_user_id)
         items = page["data"]
@@ -376,6 +386,9 @@ def fetch_league_money(token, league_id, player_names, player_prices, player_pos
 
     if unhandled_types:
         print(f"  -> WARNING: unhandled board event types (money not accounted for): {sorted(unhandled_types)}")
+    if not done:
+        print(f"  -> WARNING: reached the board-read safety cap (offset {offset}) without finding this "
+              f"season's start marker - balances are reconstructed from a PARTIAL history and are likely wrong")
 
     reversed_wins = market_wins & admin_reversals
     for buyer_id, _pid in reversed_wins:
