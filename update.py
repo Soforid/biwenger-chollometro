@@ -262,6 +262,7 @@ def fetch_league_money(token, league_id, player_names, player_prices, player_pos
                       "leaguePremium", "ultra", "userLeave", "userName",
                       "bettingPool"}
     unhandled_types = set()
+    round_events = []  # (date, base round name, results) - paid as deltas after the board pass
 
     # Safety cap, not a real limit: the board is read newest-first until a
     # seasonStarted/seasonFinished marker is hit, which is the actual end of
@@ -375,14 +376,30 @@ def fetch_league_money(token, league_id, player_names, player_prices, player_pos
                 # (puntos, alineación ideal, MVP...), aparte de lo que ya se
                 # ve en la puntuación - sin esto el saldo reconstruido se
                 # queda corto cada vez más jornadas se juegan.
-                for r in (item.get("content") or {}).get("results", []):
-                    user = r.get("user")
-                    uid = str(user["id"]) if user else None
-                    if uid in balances:
-                        balances[uid] += r.get("bonus", 0)
+                # Pero una jornada aplazada se reparte en "pasos" (Round 6,
+                # Round 6 (postponed) parte 2, parte 3...) y cada paso repite
+                # el bonus ACUMULADO de la jornada entera, no solo lo nuevo:
+                # el paso 3 de la J6 trae los mismos 41 pts / 415k que el 2.
+                # Se recogen aquí y se pagan como delta tras el bucle.
+                content = item.get("content") or {}
+                base = re.sub(r"\s*\(postponed\)\s*$", "", (content.get("round") or {}).get("name", ""))
+                round_events.append((item.get("date", 0), base, content.get("results", [])))
         if done:
             break
         offset += limit
+
+    paid_bonus = {}  # (base round, uid) -> bonus already credited
+    for _date, base, results in sorted(round_events, key=lambda e: e[0]):
+        for r in results:
+            user = r.get("user")
+            uid = str(user["id"]) if user else None
+            if uid not in balances:
+                continue
+            bonus = r.get("bonus", 0)
+            prev = paid_bonus.get((base, uid), 0)
+            if bonus > prev:
+                balances[uid] += bonus - prev
+                paid_bonus[(base, uid)] = bonus
 
     if unhandled_types:
         print(f"  -> WARNING: unhandled board event types (money not accounted for): {sorted(unhandled_types)}")
@@ -395,6 +412,16 @@ def fetch_league_money(token, league_id, player_names, player_prices, player_pos
         bid_stats[buyer_id]["wins"] = max(0, bid_stats[buyer_id]["wins"] - 1)
     if reversed_wins:
         print(f"  -> {len(reversed_wins)} fichaje(s) ganado(s) en mercado luego revertido(s) por un admin - no cuentan como 'ganada'")
+
+    # Self-check against the one balance Biwenger always exposes (the token
+    # owner's own): any drift means a board event type is mis-accounted.
+    real_own = (league_entry.get("user") or {}).get("balance")
+    if real_own is not None and my_user_id in balances:
+        drift = balances[my_user_id] - real_own
+        if drift == 0:
+            print("  -> saldo propio reconstruido == saldo real (OK)")
+        else:
+            print(f"  -> WARNING: saldo propio reconstruido difiere del real en {drift:+,} EUR - revisar tipos de evento del tablon")
 
     team_rows = sorted(([uid, users[uid], balances[uid]] for uid in users), key=lambda r: -r[2])
     transfers.sort(key=lambda t: -t[0])
@@ -576,11 +603,11 @@ def main():
     except Exception as e:
         print(f"  -> FAILED ({e}), continuing without injury data today")
         inj_html = ""
-    parts = re.split(r'<div class="elemento lesionado col-12">', inj_html)
-    name_re = re.compile(r'href="https://www\.futbolfantasy\.com/jugadores/[a-z0-9\-]+" class="jugador">(?P<name>[^<]+?)</a>', re.S)
+    parts = re.split(r'<div class="elemento lesionado[^"]*">', inj_html)
+    name_re = re.compile(r'href="https://www\.futbolfantasy\.com/jugadores/[a-z0-9\-]+(?:/[a-z0-9\-]+)?" class="jugador">(?P<name>[^<]+?)</a>', re.S)
     injury_re = re.compile(r'<span class="lesion">(?P<injury>[^<]*)</span>', re.S)
-    days_re = re.compile(r'fa-calendar"></i>\s*(?P<days>[^<]*)</span>', re.S)
-    grav_re = re.compile(r'class="gravedad-(?P<grav>[0-9])">(?P<statustxt>[^<]*)</span>', re.S)
+    days_re = re.compile(r'fa-calendar"[^>]*></i>\s*(?P<days>[^<]*)</span>', re.S)
+    grav_re = re.compile(r'<span class="[^"]*gravedad-(?P<grav>[0-9])">(?P<statustxt>[^<]*)</span>', re.S)
     prob_re = re.compile(r'class="prob-[0-9][a-z]?\s*[a-z0-9\-]*">(?P<prob>[0-9]+)%', re.S)
 
     inj_by_norm = {}
