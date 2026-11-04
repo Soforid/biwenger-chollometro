@@ -1738,7 +1738,9 @@ const CP_MIN_SQUAD = 11; // 1 portero + 10 de campo, entrenador aparte
 const cpPosShort = p => POS_NAME[p].slice(0,3).toUpperCase();
 const cpEsc = s => String(s==null?'':s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const cpAvail = p => p.status!=='injured';
-const cpSellPrice = p => (p.leagueForSale && p.salePrice!=null) ? p.salePrice : p.price;
+// Lo que cuenta es el valor de mercado (VM), no lo que pida el manager: es
+// lo que paga la máquina (±5%), y un precio pedido inflado puede no cobrarse nunca.
+const cpSellPrice = p => p.price;
 
 function cpBestXI(players){
   const by = {1:[],2:[],3:[],4:[]};
@@ -1855,12 +1857,17 @@ function cpPlan(row, target, need){
 
 let cpSelectedId = null;
 function cpSalesList(sales){
-  return `<ul class="cp-list">${sales.map(s=>`<li>${cpEsc(s.p.name)} <span class="tab">(${cpPosShort(s.p.pos)} · ${eurosShort(s.price)}${s.kind==='extra'?' · no está en venta':''})</span></li>`).join('')}</ul>`;
+  return `<ul class="cp-list">${sales.map(s=>`<li>${cpEsc(s.p.name)} <span class="tab">(${cpPosShort(s.p.pos)} · VM ${eurosShort(s.price)}${s.kind==='extra'?' · no está en venta':''})</span></li>`).join('')}</ul>`;
 }
-function cpImplHtml(impl, sales, label){
+function cpCashLine(balance, sales, need){
+  const vm = sales.reduce((s,x)=>s+x.price,0);
+  const total = balance + vm, plus = balance + vm*1.05;
+  return `<div class="cp-impl">Reuniría <b>${eurosShort(total)}</b> <span class="tab">(${eurosShort(plus)} con +5%)</span> = banco ${eurosShort(balance)} + ${eurosShort(vm)} de VM vendido · puja probable ${eurosShort(need)} → ${total>=need?'sobran':'faltan'} <b>${eurosShort(Math.abs(total-need))}</b>.</div>`;
+}
+function cpImplHtml(impl, sales, label, balance, need){
   const delta = impl.delta==null ? '' :
     ` · mejor once: <b class="${impl.delta>=0.02?'cp-ok':(impl.delta<=-0.02?'cp-no':'')}">${impl.delta>=0?'+':''}${impl.delta.toFixed(2)}</b>`;
-  return `${sales.length ? cpSalesList(sales) : ''}
+  return `${sales.length ? cpSalesList(sales) + cpCashLine(balance, sales, need) : ''}
     <div class="cp-impl">Tras la operación: <b>${impl.size}</b> jugadores${delta} · dificultad <span class="cp-chip ${impl.cls}">${impl.level}</span>
     ${impl.notes.length ? '<br>⚠ '+impl.notes.map(cpEsc).join('; ')+'.' : ''}</div>
     <div class="cp-opinion">${cpEsc(impl.verdict)}</div>`;
@@ -1899,7 +1906,7 @@ function drawCompraPotencial(){
     if(pl.bank.ok){
       route.push(`<div class="cp-route"><div class="cp-route-title cp-ok">✔ Solo con el banco</div>
         <div class="cp-impl">Le sobran ${eurosShort(pl.balance-need)} tras pujar ${eurosShort(need)}.</div>
-        ${cpImplHtml(pl.bank.impl, [], '')}</div>`);
+        ${cpImplHtml(pl.bank.impl, [], '', pl.balance, need)}</div>`);
     } else {
       const why = pl.full ? `plantilla llena (${TARGET_SQUAD}): tendría que vender a alguien antes de fichar` :
         (pl.bank.canMin ? `llega al mínimo (${eurosShort(target.askPrice)}) pero no a la puja probable: le faltan ${eurosShort(pl.bank.shortfall)}` :
@@ -1912,19 +1919,19 @@ function drawCompraPotencial(){
         route.push(`<div class="cp-route"><div class="cp-route-title cp-no">✖ Vendiendo lo que tiene en venta</div><div class="cp-impl">No tiene ningún jugador en venta ahora mismo.</div></div>`);
       } else if(pl.listedRoute && pl.listedRoute.ok){
         route.push(`<div class="cp-route"><div class="cp-route-title cp-ok">✔ Vendiendo lo que ya tiene en venta (${pl.listedRoute.sales.length} de ${pl.listed.length})</div>
-          ${cpImplHtml(pl.listedRoute.impl, pl.listedRoute.sales, '')}
-          <div class="cp-impl">Las ventas se cobran al precio pedido y solo si alguien compra antes de que cierre la puja.</div></div>`);
+          ${cpImplHtml(pl.listedRoute.impl, pl.listedRoute.sales, '', pl.balance, need)}
+          <div class="cp-impl">Contado a VM; la máquina ofrece ±5% una vez al día (7:00) y, si otro manager compra, se cobra el precio pedido.</div></div>`);
       } else {
         const cash = pl.listedRoute.cash;
         route.push(`<div class="cp-route"><div class="cp-route-title cp-no">✖ Vendiendo lo que tiene en venta</div>
-          <div class="cp-impl">Aun vendiendo sus ${pl.listed.length} jugador(es) en venta (${eurosShort(cash-pl.balance)}) le faltan ${eurosShort(need-cash)}.</div></div>`);
+          <div class="cp-impl">Aun vendiendo sus ${pl.listed.length} jugador(es) en venta a VM (${eurosShort(cash-pl.balance)}; ${eurosShort(pl.balance+(cash-pl.balance)*1.05)} con +5%) reúne ${eurosShort(cash)} y le faltan ${eurosShort(need-cash)}.</div></div>`);
       }
     }
     // Ruta 3
     if(pl.extraRoute){
       if(pl.extraRoute.ok){
         route.push(`<div class="cp-route"><div class="cp-route-title cp-warn">➕ Vendiendo además jugadores que no están en venta</div>
-          ${cpImplHtml(pl.extraRoute.impl, pl.extraRoute.sales, '')}</div>`);
+          ${cpImplHtml(pl.extraRoute.impl, pl.extraRoute.sales, '', pl.balance, need)}</div>`);
       } else {
         route.push(`<div class="cp-route"><div class="cp-route-title cp-no">✖ Ni vendiendo jugadores de la plantilla</div>
           <div class="cp-impl">Con todo lo vendible aún le faltarían ${eurosShort(pl.extraRoute.shortfall)} (o se quedaría sin once legal).</div></div>`);
@@ -1932,7 +1939,7 @@ function drawCompraPotencial(){
     }
     return `<div class="cp-card${me?' me':''}" style="--cp-color:${color}">
       <div class="cp-head"><h3>${cpEsc(pl.name)}${me?' (tú)':''}</h3><span class="cp-bal ${pl.balance<0?'neg':''}">${euros(pl.balance)}</span></div>
-      <div class="cp-sub">${pl.rosterSize} jugadores · ${pl.listed.length} en venta${pl.listed.length?` (${eurosShort(pl.listed.reduce((s,p)=>s+cpSellPrice(p),0))})`:''}</div>
+      <div class="cp-sub">${pl.rosterSize} jugadores · ${pl.listed.length} en venta${pl.listed.length?` (VM ${eurosShort(pl.listed.reduce((s,p)=>s+cpSellPrice(p),0))})`:''}</div>
       ${route.join('')}
     </div>`;
   }).join('');
