@@ -321,6 +321,7 @@ tr.row-offered:hover{background:color-mix(in srgb, var(--gk) 22%, transparent);}
 .pos-4{background:var(--fw);} .pos-5{background:var(--co);}
 .trend{display:inline-flex;align-items:center;gap:3px;font-weight:600;}
 .trend.up{color:var(--rise);} .trend.down{color:var(--fall);} .trend.flat{color:var(--ink-dim);}
+.vmd{font-size:11px;margin-left:5px;white-space:nowrap;}
 .value-cell{display:flex;align-items:center;gap:8px;}
 .value-bar{width:56px;height:6px;background:var(--surface-2);border-radius:3px;overflow:hidden;flex:0 0 auto;}
 .value-bar i{display:block;height:100%;background:var(--accent);border-radius:3px;}
@@ -515,6 +516,16 @@ const STATUS_LABEL = {doubt:'Duda',injured:'Lesión',sanctioned:'Sanción',disca
 const ROLE_ORDER = ['Dios','Clave','Importante','Rotación','Revulsivo','Reserva','Descarte'];
 const ROLE_CLASS = {'Dios':'role-dios','Clave':'role-clave','Importante':'role-importante','Rotación':'role-rotacion','Revulsivo':'role-revulsivo','Reserva':'role-reserva','Descarte':'role-descarte'};
 
+// Cambio de VM entre ayer y hoy (Biwenger solo nos da el movimiento de hoy):
+// verde si sube, rojo si baja. Se enseña junto a cada jugador que está en
+// venta o que se recomienda vender.
+function vmDeltaHtml(p){
+  const inc = p && p.inc!=null ? p.inc : null;
+  if(inc==null) return '';
+  const cls = inc>0 ? 'up' : (inc<0 ? 'down' : 'flat');
+  const txt = inc===0 ? '0' : `${inc>0?'▲ +':'▼ −'}${eurosShort(Math.abs(inc))}`;
+  return `<span class="trend vmd ${cls}" title="Cambio de VM de ayer a hoy">${txt}</span>`;
+}
 const euros = n => (n/1e6).toLocaleString('es-ES',{minimumFractionDigits:2,maximumFractionDigits:2})+' M€';
 const eurosShort = n => Math.abs(n)>=1e6 ? (n/1e6).toFixed(2)+'M€' : Math.round(n/1000)+'k€';
 // Letters like o/O with no canonical NFD decomposition (accent-stripping
@@ -1278,7 +1289,7 @@ function renderDiario(){
           <div class="diario-row-name"><span class="pos-chip pos-${p.pos}">${POS_LABEL[p.pos]}</span> ${p.name}</div>
           <div class="diario-row-reason">${p.sellReason}</div>
         </div>
-        <div class="diario-row-price">${euros(p.price)}</div>
+        <div class="diario-row-price">${euros(p.price)}${vmDeltaHtml(p)}</div>
       </div>`).join('') : `<div class="diario-empty">Nada urgente que vender ahora mismo.</div>`;
 
     const holds = pickHoldCandidates(profile);
@@ -1857,7 +1868,7 @@ function cpPlan(row, target, need){
 
 let cpSelectedId = null;
 function cpSalesList(sales){
-  return `<ul class="cp-list">${sales.map(s=>`<li>${cpEsc(s.p.name)} <span class="tab">(${cpPosShort(s.p.pos)} · VM ${eurosShort(s.price)}${s.kind==='extra'?' · no está en venta':''})</span></li>`).join('')}</ul>`;
+  return `<ul class="cp-list">${sales.map(s=>`<li>${cpEsc(s.p.name)} <span class="tab">(${cpPosShort(s.p.pos)} · VM ${eurosShort(s.price)}${s.kind==='extra'?' · no está en venta':''})</span>${vmDeltaHtml(s.p)}</li>`).join('')}</ul>`;
 }
 function cpCashLine(balance, sales, need){
   const vm = sales.reduce((s,x)=>s+x.price,0);
