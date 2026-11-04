@@ -477,7 +477,10 @@ def fetch_league_money(token, league_id, player_names, player_prices, player_pos
         user = sale.get("user")
         market[pid] = {
             "free": user is None,
-            "seller": user.get("name") if user else None,
+            # Own listings come back as {id} only (no name) - resolve through
+            # the league's user list so the seller (and their pending cash)
+            # is never silently dropped.
+            "seller": (users.get(str(user.get("id"))) or user.get("name")) if user else None,
             "price": sale.get("price"),
             "until": sale.get("until"),
         }

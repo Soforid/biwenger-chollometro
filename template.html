@@ -246,6 +246,31 @@ a{color:inherit;}
 .diario-subhead{font-size:11px;color:var(--ink-dim);font-weight:600;margin:12px 0 4px;}
 .diario-subhead:first-child{margin-top:0;}
 
+/* ---- compra potencial ---- */
+.cp-controls{display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin-bottom:12px;}
+.cp-controls select{min-width:320px;max-width:100%;}
+.cp-target{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:12px 16px;margin-bottom:14px;box-shadow:var(--shadow);font-size:13px;}
+.cp-target b{font-size:15px;}
+.cp-summary{margin-top:6px;color:var(--ink-dim);font-size:12.5px;}
+.cp-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(380px,1fr));gap:14px;}
+@media (max-width:480px){ .cp-grid{grid-template-columns:1fr;} .cp-controls select{min-width:0;width:100%;} }
+.cp-card{background:var(--surface);border:1px solid var(--line);border-left:4px solid var(--cp-color,var(--line));border-radius:10px;box-shadow:var(--shadow);padding:12px 16px 14px;}
+.cp-card.me{outline:2px solid var(--accent);outline-offset:-2px;}
+.cp-head{display:flex;justify-content:space-between;align-items:baseline;gap:10px;}
+.cp-head h3{margin:0;font-size:16px;color:var(--ink);}
+.cp-bal{font-family:'Oswald',sans-serif;font-weight:700;font-size:15px;white-space:nowrap;}
+.cp-bal.neg{color:var(--fall);}
+.cp-sub{font-size:11.5px;color:var(--ink-dim);margin-top:2px;}
+.cp-route{border-top:1px dashed var(--line);margin-top:10px;padding-top:8px;font-size:12.5px;}
+.cp-route-title{font-weight:700;display:flex;gap:6px;align-items:baseline;flex-wrap:wrap;}
+.cp-ok{color:var(--rise);} .cp-no{color:var(--fall);} .cp-warn{color:var(--accent);}
+.cp-chip{display:inline-block;font-size:10.5px;font-weight:700;padding:1px 7px;border-radius:99px;border:1px solid currentColor;letter-spacing:.03em;}
+.cp-list{margin:4px 0 0;padding-left:18px;color:var(--ink);}
+.cp-list li{margin-bottom:2px;}
+.cp-impl{margin-top:6px;color:var(--ink-dim);}
+.cp-impl b{color:var(--ink);}
+.cp-opinion{margin-top:6px;padding:6px 9px;border-radius:8px;background:var(--surface-2);color:var(--ink);}
+
 /* ---- controls ---- */
 .controls{
   position:sticky;top:0;z-index:4;background:var(--bg);
@@ -383,6 +408,7 @@ footer{margin-top:40px;padding-top:16px;border-top:1px solid var(--line);color:v
   <div class="tabs-nav" id="tabsNav">
     <button class="tab-btn active" data-tab="players">Jugadores</button>
     <button class="tab-btn" data-tab="diario" id="tabDiarioBtn" style="display:none">Diario</button>
+    <button class="tab-btn" data-tab="compra" id="tabCompraBtn" style="display:none">Compra potencial</button>
     <button class="tab-btn" data-tab="rivals" id="tabRivalsBtn" style="display:none">Rivales</button>
     <button class="tab-btn" data-tab="myteams" id="tabMyTeamsBtn" style="display:none">Flickwagen &amp; La Borde</button>
     <button class="tab-btn" data-tab="teams" id="tabTeamsBtn" style="display:none">Análisis de equipos</button>
@@ -394,6 +420,16 @@ footer{margin-top:40px;padding-top:16px;border-top:1px solid var(--line);color:v
       <span class="hint">A quién vender y a quién fichar hoy, calculado con los datos de esta actualización — orientativo, no una verdad absoluta</span>
     </div>
     <div class="diario-grid" id="diarioGrid"></div>
+  </div>
+
+  <div class="tab-panel" id="panel-compra" style="display:none">
+    <div class="section-head">
+      <h2>Compra potencial</h2>
+      <span class="hint">Elige un jugador libre del mercado de hoy y mira qué managers podrían pagarlo: con el banco, vendiendo lo que ya tienen en venta o vendiendo además jugadores de la plantilla — con sus consecuencias. Orientativo.</span>
+    </div>
+    <div class="cp-controls"><label>Jugador del mercado: <select id="cpSelect"></select></label></div>
+    <div class="cp-target" id="cpTarget"></div>
+    <div class="cp-grid" id="cpGrid"></div>
   </div>
 
   <div class="tab-panel" id="panel-teams" style="display:none">
@@ -1688,6 +1724,220 @@ function renderTable(){
   }).join('');
 }
 
+/* ---------- Compra potencial: quién puede pagar un jugador del mercado ---------- */
+// Para un jugador libre (de la máquina) del mercado de hoy, cuánto necesita
+// cada manager y de dónde lo sacaría: (1) solo con el banco, (2) además
+// vendiendo lo que YA tiene puesto en venta, (3) además vendiendo jugadores
+// que ahora no están en venta (a su valor de mercado, la máquina paga ±5%).
+// El importe de referencia es la puja sugerida (lo que probablemente hace
+// falta para ganar), no el mínimo pedido. Cada ruta lleva sus consecuencias:
+// cuántos jugadores le quedan, si sigue pudiendo alinear un once legal
+// (1 portero + 10 de campo en alguna de las formaciones), cuánto cambia la
+// calidad de su mejor once y cómo de complicado es hacerlo en la práctica.
+const CP_MIN_SQUAD = 11; // 1 portero + 10 de campo, entrenador aparte
+const cpPosShort = p => POS_NAME[p].slice(0,3).toUpperCase();
+const cpEsc = s => String(s==null?'':s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const cpAvail = p => p.status!=='injured';
+const cpSellPrice = p => (p.leagueForSale && p.salePrice!=null) ? p.salePrice : p.price;
+
+function cpBestXI(players){
+  const by = {1:[],2:[],3:[],4:[]};
+  players.filter(cpAvail).forEach(p=>{ if(by[p.pos]) by[p.pos].push(p.xiScore||0); });
+  Object.values(by).forEach(a=>a.sort((x,y)=>y-x));
+  if(!by[1].length) return null;
+  const sum = (a,n)=> a.slice(0,n).reduce((s,v)=>s+v,0);
+  let best = null;
+  FORMATIONS.forEach(f=>{
+    if(by[2].length<f.def || by[3].length<f.cen || by[4].length<f.del) return;
+    const s = by[1][0] + sum(by[2],f.def) + sum(by[3],f.cen) + sum(by[4],f.del);
+    if(best==null || s>best) best = s;
+  });
+  return best; // null = no puede formar un once legal
+}
+
+function cpDescribe(roster, sales, target, finalCash){
+  const sold = new Set(sales.map(s=>s.p.id));
+  const after = roster.filter(p=>!sold.has(p.id)).concat([target]);
+  const size = after.length;
+  const before = cpBestXI(roster), afterXI = cpBestXI(after);
+  const legal = afterXI!=null;
+  const wasLegal = before!=null;
+  const shrink = roster.length - size; // >0 solo si vende más de lo que compra
+  const delta = (legal && before!=null) ? afterXI - before : null;
+  const nSales = sales.length, nExtra = sales.filter(s=>s.kind==='extra').length;
+  const hasCoach = after.some(p=>p.pos===5);
+  let pts = nSales + nExtra + (shrink>0 && size<=13 ? 1 : 0) + (shrink>0 && size<=12 ? 2 : 0);
+  let level, cls;
+  if((!legal && wasLegal) || (shrink>0 && size<=CP_MIN_SQUAD)){ level='Muy difícil'; cls='cp-no'; }
+  else if(pts===0){ level='Directo'; cls='cp-ok'; }
+  else if(pts<=1){ level='Fácil'; cls='cp-ok'; }
+  else if(pts<=3){ level='Moderado'; cls='cp-warn'; }
+  else if(pts<=5){ level='Complicado'; cls='cp-warn'; }
+  else { level='Muy difícil'; cls='cp-no'; }
+
+  const notes = [];
+  if(!legal && wasLegal) notes.push('se quedaría sin once legal (necesita 1 portero y 10 de campo disponibles)');
+  else if(!legal) notes.push(`su plantilla ya no da para un once legal (${roster.length} jugadores, o sin portero/hueco por posición): con este fichaje sigue sin poder puntuar hasta completar al menos ${CP_MIN_SQUAD}`);
+  else if(size<=CP_MIN_SQUAD) notes.push(`${shrink>0?'se queda':'sigue'} con ${size} jugadores: justo el mínimo, sin suplentes — cualquier lesión o sanción le deja sin once`);
+  else if(shrink>0 && size<=13) notes.push(`se queda con ${size} jugadores: poco fondo de armario`);
+  if(nExtra>0) notes.push(nExtra===1 ? 'una de las ventas aún no está en el mercado: hay que aceptar la oferta de la máquina (±5%) o esperar comprador' : `${nExtra} de las ventas aún no están en el mercado: hay que aceptar la oferta de la máquina (±5%) o esperar comprador`);
+  if(nSales>=4) notes.push('muchas operaciones encadenadas antes del cierre de la puja');
+  if(!hasCoach) notes.push('sin entrenador');
+  if(finalCash<0) notes.push('acabaría en negativo: no puntuaría la jornada si sigue así al empezar');
+
+  let verdict;
+  if(!legal && !wasLegal) verdict = 'Le conviene: necesita jugadores para poder alinear un once, aunque con este solo no le basta.';
+  else if(!legal || level==='Muy difícil') verdict = 'Mala idea: el coste en plantilla y en riesgo es mayor que el beneficio.';
+  else if(delta!=null && delta>=0.12 && pts<=3) verdict = 'Buena idea: mejora claramente su once y es asumible.';
+  else if(delta!=null && delta>=0.12) verdict = 'Mejora su once, pero es una operación pesada: solo merece la pena si de verdad lo quiere.';
+  else if(delta!=null && delta>-0.12) verdict = pts<=1 ? 'Neutro: casi no cambia su once; lo haría solo por especular o por rotación.' : 'Poco sentido: mucho esfuerzo para casi nada de mejora.';
+  else verdict = 'Empeora su once: vende más calidad de la que compra.';
+  return {size, legal, delta, level, cls, notes, verdict, nSales, nExtra, finalCash};
+}
+
+function cpPlan(row, target, need){
+  const [uid,name,balance] = row;
+  const roster = (ROSTERS[uid]||[]).map(pid=>dataById.get(pid)).filter(Boolean);
+  const listed = roster.filter(p=>p.leagueForSale && p.saleSeller===name)
+    .sort((a,b)=>cpSellPrice(b)-cpSellPrice(a));
+  const full = roster.length>=TARGET_SQUAD;
+  const minSales = full ? 1 : 0;
+  const res = {uid, name, balance, roster, listed, full, need, rosterSize: roster.length};
+
+  // Ruta 1: solo con el banco
+  if(balance>=need && !full){
+    res.bank = {ok:true, impl: cpDescribe(roster, [], target, balance-need)};
+    res.best = 0; return res;
+  }
+  res.bank = {ok:false, shortfall: Math.max(0, need-balance), full, canMin: balance>=target.askPrice && !full};
+
+  // Ruta 2: banco + lo que ya tiene en venta (se vende el mínimo necesario)
+  if(listed.length){
+    let cash = balance; const sales = [];
+    for(const p of listed){
+      if(cash>=need && sales.length>=minSales) break;
+      sales.push({p, price:cpSellPrice(p), kind:'listed'}); cash += cpSellPrice(p);
+    }
+    const ok = cash>=need && sales.length>=minSales;
+    res.listedRoute = ok ? {ok, sales, cash, impl: cpDescribe(roster, sales, target, cash-need)}
+                         : {ok:false, sales:listed.map(p=>({p, price:cpSellPrice(p), kind:'listed'})), cash:balance+listed.reduce((s,p)=>s+cpSellPrice(p),0)};
+    if(ok){ res.best = 1; return res; }
+  }
+
+  // Ruta 3: además, vender jugadores que hoy no están en venta (los de
+  // menos utilidad para su once primero, sin romper el once legal si puede
+  // evitarse; el entrenador no se toca).
+  const sales = (res.listedRoute ? res.listedRoute.sales : []).slice();
+  let cash = balance + sales.reduce((s,x)=>s+x.price,0);
+  const soldIds = () => new Set(sales.map(s=>s.p.id));
+  const pool = () => roster.filter(p=>!soldIds().has(p.id) && p.pos!==5 && !(p.leagueForSale && p.saleSeller===name));
+  const keepsLegal = p => {
+    const gone = soldIds(); gone.add(p.id);
+    return cpBestXI(roster.filter(q=>!gone.has(q.id)).concat([target]))!=null;
+  };
+  let guard = 0;
+  while((cash<need || sales.length<minSales) && guard++<12){
+    const cand = pool().sort((a,b)=>(a.xiScore||0)-(b.xiScore||0));
+    if(!cand.length) break;
+    const missing = need - cash;
+    const safe = cand.filter(keepsLegal);
+    const base = safe.length ? safe : cand;
+    const covers = missing>0 ? base.filter(p=>p.price>=missing) : base;
+    const pick = (covers.length ? covers : base)[0];
+    sales.push({p:pick, price:pick.price, kind:'extra'}); cash += pick.price;
+  }
+  const ok3 = cash>=need && sales.length>=minSales;
+  res.extraRoute = ok3 ? {ok:true, sales, cash, impl: cpDescribe(roster, sales, target, cash-need)}
+                       : {ok:false, sales, cash, shortfall: Math.max(0, need-cash)};
+  res.best = ok3 ? 2 : 3;
+  return res;
+}
+
+let cpSelectedId = null;
+function cpSalesList(sales){
+  return `<ul class="cp-list">${sales.map(s=>`<li>${cpEsc(s.p.name)} <span class="tab">(${cpPosShort(s.p.pos)} · ${eurosShort(s.price)}${s.kind==='extra'?' · no está en venta':''})</span></li>`).join('')}</ul>`;
+}
+function cpImplHtml(impl, sales, label){
+  const delta = impl.delta==null ? '' :
+    ` · mejor once: <b class="${impl.delta>=0.02?'cp-ok':(impl.delta<=-0.02?'cp-no':'')}">${impl.delta>=0?'+':''}${impl.delta.toFixed(2)}</b>`;
+  return `${sales.length ? cpSalesList(sales) : ''}
+    <div class="cp-impl">Tras la operación: <b>${impl.size}</b> jugadores${delta} · dificultad <span class="cp-chip ${impl.cls}">${impl.level}</span>
+    ${impl.notes.length ? '<br>⚠ '+impl.notes.map(cpEsc).join('; ')+'.' : ''}</div>
+    <div class="cp-opinion">${cpEsc(impl.verdict)}</div>`;
+}
+
+function renderCompraPotencial(){
+  const free = data.filter(d=>d.leagueFree && d.team!=='Libre' && d.suggested!=null)
+    .sort((a,b)=>(b.price||0)-(a.price||0));
+  if(!RIVALS.length || !free.length) return;
+  document.getElementById('tabCompraBtn').style.display = '';
+  const sel = document.getElementById('cpSelect');
+  if(cpSelectedId==null || !free.some(d=>d.id===cpSelectedId)) cpSelectedId = free[0].id;
+  sel.innerHTML = free.map(d=>`<option value="${d.id}"${d.id===cpSelectedId?' selected':''}>${cpEsc(d.name)} — ${cpEsc(d.team)} · ${cpPosShort(d.pos)} · ${eurosShort(d.askPrice)}</option>`).join('');
+  sel.onchange = e=>{ cpSelectedId = Number(e.target.value); drawCompraPotencial(); };
+  drawCompraPotencial();
+}
+
+function drawCompraPotencial(){
+  const target = dataById.get(cpSelectedId);
+  if(!target) return;
+  const need = target.suggested;
+  const until = target.saleUntil ? new Date(target.saleUntil*1000).toLocaleString('es-ES',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : '?';
+  const plans = RIVALS.map(r=>cpPlan(r, target, need)).sort((a,b)=>
+    (a.best-b.best) || ((a.extraRoute&&a.extraRoute.impl&&b.extraRoute&&b.extraRoute.impl) ? (a.extraRoute.sales.length-b.extraRoute.sales.length) : 0) || (b.balance-a.balance));
+  const n = k => plans.filter(p=>p.best===k).length;
+  document.getElementById('cpTarget').innerHTML =
+    `<b>${cpEsc(target.name)}</b> · ${cpEsc(target.team)} · ${POS_NAME[target.pos]} · valor ${eurosShort(target.price)} (${target.inc>=0?'+':''}${eurosShort(target.inc)} hoy)<br>
+     Mínimo pedido <b>${eurosShort(target.askPrice)}</b> · puja probable para ganar <b>${eurosShort(need)}</b> · cierra ${until}
+     <div class="cp-summary">${n(0)} manager(s) podrían pagarlo solo con el banco · ${n(1)} más vendiendo lo que ya tienen en venta · ${n(2)} más vendiendo además jugadores que hoy no están en venta · ${n(3)} no llegan ni así.</div>`;
+
+  document.getElementById('cpGrid').innerHTML = plans.map(pl=>{
+    const me = pl.name==='Der Flickwagen';
+    const color = ['var(--rise)','var(--gk)','var(--accent)','var(--fall)'][pl.best];
+    const route = [];
+    // Ruta 1
+    if(pl.bank.ok){
+      route.push(`<div class="cp-route"><div class="cp-route-title cp-ok">✔ Solo con el banco</div>
+        <div class="cp-impl">Le sobran ${eurosShort(pl.balance-need)} tras pujar ${eurosShort(need)}.</div>
+        ${cpImplHtml(pl.bank.impl, [], '')}</div>`);
+    } else {
+      const why = pl.full ? `plantilla llena (${TARGET_SQUAD}): tendría que vender a alguien antes de fichar` :
+        (pl.bank.canMin ? `llega al mínimo (${eurosShort(target.askPrice)}) pero no a la puja probable: le faltan ${eurosShort(pl.bank.shortfall)}` :
+        `le faltan ${eurosShort(pl.bank.shortfall)}`);
+      route.push(`<div class="cp-route"><div class="cp-route-title cp-no">✖ Solo con el banco</div><div class="cp-impl">${why}.</div></div>`);
+    }
+    // Ruta 2
+    if(!pl.bank.ok){
+      if(!pl.listed.length){
+        route.push(`<div class="cp-route"><div class="cp-route-title cp-no">✖ Vendiendo lo que tiene en venta</div><div class="cp-impl">No tiene ningún jugador en venta ahora mismo.</div></div>`);
+      } else if(pl.listedRoute && pl.listedRoute.ok){
+        route.push(`<div class="cp-route"><div class="cp-route-title cp-ok">✔ Vendiendo lo que ya tiene en venta (${pl.listedRoute.sales.length} de ${pl.listed.length})</div>
+          ${cpImplHtml(pl.listedRoute.impl, pl.listedRoute.sales, '')}
+          <div class="cp-impl">Las ventas se cobran al precio pedido y solo si alguien compra antes de que cierre la puja.</div></div>`);
+      } else {
+        const cash = pl.listedRoute.cash;
+        route.push(`<div class="cp-route"><div class="cp-route-title cp-no">✖ Vendiendo lo que tiene en venta</div>
+          <div class="cp-impl">Aun vendiendo sus ${pl.listed.length} jugador(es) en venta (${eurosShort(cash-pl.balance)}) le faltan ${eurosShort(need-cash)}.</div></div>`);
+      }
+    }
+    // Ruta 3
+    if(pl.extraRoute){
+      if(pl.extraRoute.ok){
+        route.push(`<div class="cp-route"><div class="cp-route-title cp-warn">➕ Vendiendo además jugadores que no están en venta</div>
+          ${cpImplHtml(pl.extraRoute.impl, pl.extraRoute.sales, '')}</div>`);
+      } else {
+        route.push(`<div class="cp-route"><div class="cp-route-title cp-no">✖ Ni vendiendo jugadores de la plantilla</div>
+          <div class="cp-impl">Con todo lo vendible aún le faltarían ${eurosShort(pl.extraRoute.shortfall)} (o se quedaría sin once legal).</div></div>`);
+      }
+    }
+    return `<div class="cp-card${me?' me':''}" style="--cp-color:${color}">
+      <div class="cp-head"><h3>${cpEsc(pl.name)}${me?' (tú)':''}</h3><span class="cp-bal ${pl.balance<0?'neg':''}">${euros(pl.balance)}</span></div>
+      <div class="cp-sub">${pl.rosterSize} jugadores · ${pl.listed.length} en venta${pl.listed.length?` (${eurosShort(pl.listed.reduce((s,p)=>s+cpSellPrice(p),0))})`:''}</div>
+      ${route.join('')}
+    </div>`;
+  }).join('');
+}
+
 /* ---------- Tabs ---------- */
 function switchTab(name){
   document.querySelectorAll('.tab-panel').forEach(p=>{ p.style.display = (p.id==='panel-'+name) ? '' : 'none'; });
@@ -1772,6 +2022,7 @@ renderSpark();
 renderRivals();
 renderMyTeams();
 renderDiario();
+renderCompraPotencial();
 renderTeams();
 renderHead();
 renderPosTabs();
