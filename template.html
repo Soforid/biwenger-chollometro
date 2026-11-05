@@ -436,7 +436,7 @@ footer{margin-top:40px;padding-top:16px;border-top:1px solid var(--line);color:v
   <div class="tab-panel" id="panel-teams" style="display:none">
     <div class="section-head">
       <h2>Análisis de equipos</h2>
-      <span class="hint">Mejor once posible de cada plantilla de tu liga (formación que más le encaja, portero aparte) según los puntos por partido de esta temporada, titularidad, rol, forma reciente y precio. Los multiposición juegan lo más atrás que permita la formación — orientativo, no una alineación oficial</span>
+      <span class="hint">Mejor once posible de cada plantilla de tu liga (formación que más le encaja, portero aparte) según lo que está rindiendo ahora (puntos por partido, racha de las últimas 5 jornadas y minutos reales), con poco peso para el rol de pretemporada y el precio. Los multiposición juegan lo más atrás que permita la formación — orientativo, no una alineación oficial</span>
     </div>
     <div class="teams-grid" id="teamsGrid"></div>
     <span class="hint">Haz clic en un manager para ver el once elegido</span>
@@ -1289,20 +1289,50 @@ const FORMATIONS = [
 ];
 const formationLabel = f => `${f.def}-${f.cen}-${f.del}`;
 
-// Puntos de las últimas jornadas disputadas (racha reciente) - reutiliza la
-// misma extracción que el indicador de racha de "fitness" del roster modal.
+// "fitness" = últimas 5 jornadas del jugador, de la más antigua a la más
+// reciente: un número son los puntos que sacó, null = no jugó, y un texto
+// ('injured', 'doubt', 'sanctioned'...) = no disponible. (Antes se buscaba un
+// campo .points que no existe y la racha reciente nunca llegaba a contar.)
+function fitnessList(d){ return Array.isArray(d.fitness) ? d.fitness : []; }
 function fitnessPts(m){
+  if(typeof m==='number') return m;
   return m && typeof m.points==='number' ? m.points : (m && typeof m.p==='number' ? m.p : null);
 }
-function recentFormFrac(d){
-  const list = Array.isArray(d.fitness) ? d.fitness : [];
-  const vals = list.slice(0,3).map(fitnessPts).filter(v=>v!=null);
-  if(!vals.length) return 0.5; // sin partidos recientes con dato -> neutro, no penaliza
-  const avg = vals.reduce((s,v)=>s+v,0) / vals.length;
-  return percentileOf(d.pos, avg, x=>{
-    const xv = (Array.isArray(x.fitness)?x.fitness:[]).slice(0,3).map(fitnessPts).filter(v=>v!=null);
-    return xv.length ? xv.reduce((s,v)=>s+v,0)/xv.length : null;
+const FORM_PRIOR_K = 1.5;
+const POS_MEAN_FORM = {};
+[1,2,3,4].forEach(pos=>{
+  const vals = data.filter(x=>x.pos===pos).flatMap(x=>fitnessList(x).map(fitnessPts).filter(v=>v!=null));
+  POS_MEAN_FORM[pos] = vals.length ? vals.reduce((s,v)=>s+v,0)/vals.length : 0;
+});
+// Media de puntos en las jornadas que jugó de las últimas 5, con más peso a
+// las recientes y acercada a la media de su posición si jugó poco.
+function recentFormValue(d){
+  const list = fitnessList(d);
+  let sw=0, sv=0, n=0;
+  list.forEach((m,i)=>{
+    const v = fitnessPts(m);
+    if(v==null) return;
+    const w = 1 + i*0.35; // la última jornada pesa ~2,4x la más antigua
+    sw += w; sv += w*v; n++;
   });
+  if(!n) return null;
+  return (sv + FORM_PRIOR_K*(POS_MEAN_FORM[d.pos]||0)) / (sw + FORM_PRIOR_K);
+}
+function recentFormFrac(d){
+  const v = recentFormValue(d);
+  if(v==null) return 0.25; // no ha jugado nada en las últimas 5 jornadas
+  return percentileOf(d.pos, v, recentFormValue);
+}
+// Cuánto está jugando de verdad: apariciones en las últimas 5 jornadas
+// (peso mayor) y en toda la temporada. Es lo que detecta al suplente que ya
+// es titular, o al titular que ha perdido el sitio, sin esperar a que cambie
+// el rol de la web.
+const MAX_PLAYED = Math.max(1, ...data.map(d=>d.played||0));
+function playingTimeFrac(d){
+  const list = fitnessList(d);
+  const last5 = list.length ? list.filter(m=>fitnessPts(m)!=null).length / Math.max(5, list.length) : 0.5;
+  const season = (d.played||0) / MAX_PLAYED;
+  return clamp01(0.6*last5 + 0.4*season);
 }
 
 // "Puntos conseguidos globales": mezcla los de la 25/26 (base fiable pero ya
@@ -1346,17 +1376,20 @@ function seasonPpgFrac(d){
   return percentileOf(d.pos, ppgShrunk(d), x=> x.played>0 ? ppgShrunk(x) : null);
 }
 
-// Seis factores, ninguno decide él solo quién entra en el once: puntos por
-// partido de esta temporada, puntos totales (disponibilidad), titularidad+rol,
-// forma de las últimas jornadas, precio de mercado (lo que valora el resto) y
-// movimiento de precio de hoy.
+// Siete factores, ninguno decide él solo quién entra en el once. El peso va
+// a lo que el jugador está haciendo AHORA (puntos por partido y racha de las
+// últimas 5 jornadas, minutos reales); el rol de pretemporada y la
+// probabilidad de titular pesan poco, porque justo ahí es donde fallan las
+// previsiones: suplentes que ya son titulares y fichajes de ilusión que
+// rinden poco. El precio recoge lo que opina el mercado, y se queda corto.
 function xiScore(d){
   return clamp01(
-    seasonPpgFrac(d) * 0.28 +
-    percentileOf(d.pos, d.pts, x=>x.pts) * 0.12 +
-    roleProb01(d) * 0.25 +
-    recentFormFrac(d) * 0.18 +
-    percentileOf(d.pos, d.price, x=>x.price) * 0.12 +
+    seasonPpgFrac(d) * 0.30 +
+    recentFormFrac(d) * 0.25 +
+    playingTimeFrac(d) * 0.15 +
+    percentileOf(d.pos, d.pts, x=>x.pts) * 0.08 +
+    roleProb01(d) * 0.10 +
+    percentileOf(d.pos, d.price, x=>x.price) * 0.07 +
     priceMomentumFrac(d) * 0.05
   );
 }
