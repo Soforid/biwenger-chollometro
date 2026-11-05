@@ -668,6 +668,17 @@ def main():
             "fitness": p.get("fitness") or [],
             "cuatroRating": None, "cuatroComment": None, "cuatroUrl": None,
         })
+    # Multi-position players. Biwenger's own competition data lists them in
+    # "altPositions" next to the single main "position" (e.g. Cepeda: position 4,
+    # altPositions [3]). This is the authoritative source and covers players
+    # who were multi-position from the start; the board "position" events only
+    # ever showed the ones that changed during the season.
+    pos_alt_comp = {}
+    for pid, p in biw_data["players"].items():
+        alts = [a for a in (p.get("altPositions") or []) if a != p["position"]]
+        if alts:
+            pos_alt_comp[str(p["id"])] = [p["position"]] + alts
+    print(f"  -> {len(pos_alt_comp)} multi-position players (altPositions)")
     vals = biw_market["values"][-60:]
     mc_line = json.dumps(vals, separators=(",", ":"))
     print(f"  -> {len(players)} players")
@@ -822,7 +833,7 @@ def main():
     print("[7/10] Fetching league money, market and rivals (Biwenger, read-only)...")
     rivals_json = "[]"
     rosters_json = "{}"
-    pos_alt_json = "{}"
+    pos_alt_json = json.dumps(pos_alt_comp, separators=(",", ":"))
     bid_model = dict(BID_MODEL_DEFAULT)
     paid_json = "{}"
     market = {}
@@ -873,7 +884,6 @@ def main():
                 rivals.sort(key=lambda r: -r[2])
                 rivals_json = json.dumps(rivals, ensure_ascii=False, separators=(",", ":"))
                 rosters_json = json.dumps(league_data["rosters"], ensure_ascii=False, separators=(",", ":"))
-                pos_alt_json = json.dumps(league_data["pos_alt"], separators=(",", ":"))
                 try:
                     slug_by_pid = {p["id"]: p.get("slug") for p in biw_data["players"].values() if p.get("slug")}
                     bid_model = calibrate_bid_model(league_data["auctions"], slug_by_pid)
