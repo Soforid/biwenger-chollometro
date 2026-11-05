@@ -200,6 +200,108 @@ def percentile(sorted_vals, p):
     return sorted_vals[f] + (sorted_vals[c] - sorted_vals[f]) * (k - f)
 
 
+
+# Winning price of a machine auction as a multiple of the player's market
+# value (VM) the day it was listed. Measured on this league's real auctions
+# (Jul-Nov 2026, ~270 with price history): the one thing that really moves it
+# is how much the player's price rose the day he came to market (+2% -> ~1.16x,
+# flat -> ~1.05x, falling -> ~ask). Position, price tier, points and role added
+# nothing once that is known, and the old season-long median (1.15x) was
+# always above the price paid because the market has cooled since summer.
+# Defaults = fit on 2026-11-05; the daily run re-fits on the last 45 days
+# (half-life 21 days) and falls back to these if price history can't be read.
+BID_MODEL_DEFAULT = {"a": 0.0487, "b": 0.2706, "hi": 0.061, "n": 0, "src": "default"}
+
+
+def _ymd(ts, off_days=0):
+    import datetime
+    d = datetime.datetime.fromtimestamp(ts, datetime.timezone.utc) + datetime.timedelta(days=off_days)
+    return int(d.strftime("%y%m%d"))
+
+
+PRICE_CACHE = ROOT / ".price_cache.json"
+
+
+def calibrate_bid_model(auctions, slug_by_pid, window_days=35, half_life=21.0, max_players=70):
+    """Re-fit ratio = 1 + a + b*x, x = clip(price change on listing day, -3%, +5%)*20,
+    weighted by recency, centred so `a` is the MEDIAN (not mean) outcome;
+    `hi` is the 80th percentile of the residuals ("to be safe" bid)."""
+    now = time.time()
+    recent = [a for a in auctions if now - a["ts"] <= window_days * 86400 and a["pid"] in slug_by_pid]
+    recent.sort(key=lambda a: -a["ts"])
+    pids, seen = [], set()
+    for a in recent:
+        if a["pid"] not in seen:
+            seen.add(a["pid"])
+            pids.append(a["pid"])
+    pids = pids[:max_players]
+    # Biwenger's public API allows 200 requests per 8h window (HTTP 429 with
+    # x-rate-limit-reset after that), and past daily prices never change - so
+    # every price history already fetched is kept on disk and only players
+    # not seen before cost a request (a fresh checkout pays up to max_players
+    # once; repeated manual runs pay almost nothing).
+    try:
+        cache = {int(k): {int(d): v for d, v in h.items()} for k, h in json.loads(PRICE_CACHE.read_text(encoding="utf-8")).items()}
+    except Exception:
+        cache = {}
+    hist, fails = {}, 0
+    for pid in pids:
+        need_day = _ymd(max(a["ts"] for a in recent if a["pid"] == pid), -1)
+        if pid in cache and need_day in cache[pid]:
+            hist[pid] = cache[pid]
+            continue
+        try:
+            raw = json.loads(fetch(f"https://cf.biwenger.com/api/v2/players/la-liga/{slug_by_pid[pid]}?lang=es&fields=prices&score=1"))
+            hist[pid] = cache[pid] = {int(d): v for d, v in raw["data"]["prices"]}
+            fails = 0
+        except Exception:
+            fails += 1
+            if fails >= 3:  # rate-limited: stop rather than hammer it
+                break
+        time.sleep(0.6)
+    try:
+        PRICE_CACHE.write_text(json.dumps(cache), encoding="utf-8")
+    except Exception:
+        pass
+    pts = []
+    for a in recent:
+        h = hist.get(a["pid"])
+        if not h:
+            continue
+        p1, p2 = h.get(_ymd(a["ts"], -1)), h.get(_ymd(a["ts"], -2))
+        if not p1:
+            continue
+        mom = (p1 / p2 - 1) if p2 else 0.0
+        x = max(-0.03, min(0.05, mom)) * 20
+        w = 0.5 ** ((now - a["ts"]) / 86400 / half_life)
+        pts.append((x, a["amount"] / p1 - 1, w))
+    if len(pts) < 20:
+        return dict(BID_MODEL_DEFAULT)
+    sw = sum(w for _, _, w in pts)
+    mx = sum(w * x for x, _, w in pts) / sw
+    my = sum(w * y for _, y, w in pts) / sw
+    var = sum(w * (x - mx) ** 2 for x, _, w in pts)
+    b = sum(w * (x - mx) * (y - my) for x, y, w in pts) / var if var > 1e-9 else 0.0
+    a0 = my - b * mx
+
+    def wquant(vals, q):
+        vals = sorted(vals)
+        tot, acc = sum(w for _, w in vals), 0.0
+        for v, w in vals:
+            acc += w
+            if acc >= q * tot:
+                return v
+        return vals[-1][0]
+
+    res = [(y - (a0 + b * x), w) for x, y, w in pts]
+    shift = wquant(res, 0.5)
+    hi = wquant([(r - shift, w) for r, w in res], 0.8)
+    a = a0 + shift
+    if not (0.0 <= b <= 0.6 and -0.05 <= a <= 0.15 and 0.0 <= hi <= 0.2):
+        return dict(BID_MODEL_DEFAULT)
+    return {"a": round(a, 4), "b": round(b, 4), "hi": round(hi, 4), "n": len(pts), "src": "auto"}
+
+
 def fetch_league_money(token, league_id, player_names, player_prices, player_pos):
     """Read-only: reconstructs each manager's balance since this season's reset
     (50M start, then a one-off -5M "impost revolucionari" league tax on day
@@ -263,6 +365,13 @@ def fetch_league_money(token, league_id, player_names, player_prices, player_pos
                       "bettingPool"}
     unhandled_types = set()
     round_events = []  # (date, base round name, results) - paid as deltas after the board pass
+    # Multi-position players: Biwenger only logs them as board "playerMovements"
+    # position changes (e.g. 25384: 2 -> [2,3]). The board is read newest-first
+    # so the FIRST event seen per player is their current set of positions; the
+    # first element is the main one (it always equals the competition's single
+    # "position" field).
+    pos_now = {}
+    auctions = []  # (ts, player, winning amount, rival bids) for bid-model calibration
 
     # Safety cap, not a real limit: the board is read newest-first until a
     # seasonStarted/seasonFinished marker is hit, which is the actual end of
@@ -289,6 +398,11 @@ def fetch_league_money(token, league_id, player_names, player_prices, player_pos
             if item["type"] in ("seasonStarted", "seasonFinished"):
                 done = True
                 break
+            if item["type"] == "playerMovements":
+                for c in item.get("content", []):
+                    if c.get("type") == "position" and c.get("player") not in pos_now:
+                        to = c.get("to")
+                        pos_now[c["player"]] = list(to) if isinstance(to, list) else [to]
             if item["type"] == "market":
                 for c in item.get("content", []):
                     buyer = c.get("to")
@@ -296,6 +410,8 @@ def fetch_league_money(token, league_id, player_names, player_prices, player_pos
                     amount = c.get("amount", 0)
                     buyer_id = str(buyer["id"]) if buyer else None
                     seller_id = str(seller["id"]) if seller else None
+                    auctions.append({"ts": item.get("date", 0), "pid": c.get("player"),
+                                     "amount": amount, "nbids": len(c.get("bids", []))})
                     if buyer_id in balances:
                         balances[buyer_id] -= amount
                     if seller_id in balances:
@@ -506,6 +622,8 @@ def fetch_league_money(token, league_id, player_names, player_prices, player_pos
         "team_rows": team_rows, "transfers": transfers, "market": market,
         "bid_stats": bid_stats, "rosters": rosters, "users": users,
         "bid_median_by_pos": bid_median_by_pos, "bid_spread": bid_spread,
+        "pos_alt": {pid: v for pid, v in pos_now.items() if len(v) > 1},
+        "auctions": auctions,
         "paid_by_user": paid_by_user,
     }
 
@@ -542,6 +660,7 @@ def main():
             "pos": p["position"], "price": p["price"], "inc": p["priceIncrement"],
             "ptsLS": p.get("pointsLastSeason"), "status": p["status"],
             "pts": p.get("points", 0),
+            "played": (p.get("playedHome") or 0) + (p.get("playedAway") or 0),
             # Per-matchday recent form - empty until the season actually kicks
             # off and Biwenger starts populating it. Passed through as-is
             # (shape unverified against real match data yet) for the "racha
@@ -703,6 +822,8 @@ def main():
     print("[7/10] Fetching league money, market and rivals (Biwenger, read-only)...")
     rivals_json = "[]"
     rosters_json = "{}"
+    pos_alt_json = "{}"
+    bid_model = dict(BID_MODEL_DEFAULT)
     paid_json = "{}"
     market = {}
     bid_median_by_pos = {1: 1.10, 2: 1.10, 3: 1.10, 4: 1.10, 5: 1.10}
@@ -752,6 +873,15 @@ def main():
                 rivals.sort(key=lambda r: -r[2])
                 rivals_json = json.dumps(rivals, ensure_ascii=False, separators=(",", ":"))
                 rosters_json = json.dumps(league_data["rosters"], ensure_ascii=False, separators=(",", ":"))
+                pos_alt_json = json.dumps(league_data["pos_alt"], separators=(",", ":"))
+                try:
+                    slug_by_pid = {p["id"]: p.get("slug") for p in biw_data["players"].values() if p.get("slug")}
+                    bid_model = calibrate_bid_model(league_data["auctions"], slug_by_pid)
+                    print(f"  -> modelo de puja ({bid_model['src']}, n={bid_model['n']}): "
+                          f"mediana {1 + bid_model['a']:.3f}x con precio plano, +{bid_model['b'] * 20 * 0.01:.3f}x por cada +1% de subida ese dia, "
+                          f"'para asegurar' +{bid_model['hi']:.3f}x")
+                except Exception as e:
+                    print(f"  -> calibrating bid model failed ({e}), using defaults")
                 paid_json = json.dumps(league_data["paid_by_user"], ensure_ascii=False, separators=(",", ":"))
             else:
                 print("  -> league not found for this token, skipping")
@@ -807,7 +937,7 @@ def main():
             p["id"], p["name"], p["team"], p["pos"], p["price"], p["inc"], p["ptsLS"], p["status"],
             p["nextDiff"], role, injury_txt, days_txt, grav_v, status_txt, prob_v,
             league_free, league_forsale, sale_price, sale_seller, sale_until,
-            p["pts"], p["fitness"], cuatro_rating, cuatro_comment, cuatro_url,
+            p["pts"], p["fitness"], cuatro_rating, cuatro_comment, cuatro_url, p["played"],
         ])
     players_json = json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
     print(f"  -> role matches: {role_matches} / injury matches: {inj_matches} / lineup probability matches: {lineup_prob_matches} / Cuatro Picas matches: {cuatro_matches}")
@@ -825,6 +955,8 @@ def main():
             .replace("__FONT700__", font700)
             .replace("__RIVALS__", rivals_json)
             .replace("__ROSTERS__", rosters_json)
+            .replace("__POS_ALT__", pos_alt_json)
+            .replace("__BID_MODEL__", json.dumps(bid_model, separators=(",", ":")))
             .replace("__PAID_PRICES__", paid_json)
             .replace("__BID_MEDIAN_BY_POS__", json.dumps({str(k): v for k, v in bid_median_by_pos.items()}))
             .replace("__BID_SPREAD__", json.dumps(round(bid_spread, 3)))

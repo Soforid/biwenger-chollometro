@@ -436,7 +436,7 @@ footer{margin-top:40px;padding-top:16px;border-top:1px solid var(--line);color:v
   <div class="tab-panel" id="panel-teams" style="display:none">
     <div class="section-head">
       <h2>Análisis de equipos</h2>
-      <span class="hint">Mejor once posible de cada plantilla de tu liga, con los jugadores que ya tiene cada manager (formación que más le encaja, portero aparte) según titularidad, rol y rendimiento — orientativo, no una alineación oficial</span>
+      <span class="hint">Mejor once posible de cada plantilla de tu liga (formación que más le encaja, portero aparte) según los puntos por partido de esta temporada, titularidad, rol, forma reciente y precio. Los multiposición juegan lo más atrás que permita la formación — orientativo, no una alineación oficial</span>
     </div>
     <div class="teams-grid" id="teamsGrid"></div>
     <span class="hint">Haz clic en un manager para ver el once elegido</span>
@@ -504,9 +504,9 @@ const PLAYERS = __PLAYERS__; // [id,name,team,pos,price,inc,ptsLS,status,nextDif
 const MARKETCAP = __MARKETCAP__; // [[yymmdd,value],...]
 const RIVALS = __RIVALS__; // [[userId,name,balance,pendingFromListings,rosterValue,por,def,cen,del,ent,squadSize,wins,losses,rosterValueChange],...] sorted desc by balance
 const ROSTERS = __ROSTERS__; // {userId: [playerId,...]}
+const POS_ALT = __POS_ALT__; // {playerId: [posPrincipal, posAlternativa,...]} solo jugadores multiposición
 const PAID_PRICES = __PAID_PRICES__; // {userId: {playerId: amountPaid}} solo para jugadores que siguen en su plantilla
-const BID_MEDIAN_BY_POS = __BID_MEDIAN_BY_POS__; // {"1":1.08,"2":1.14,...} real median winning_amount/value per position this season (POR/DEF/CEN/DEL/ENT), excluding sub-200k filler buys
-const BID_SPREAD = __BID_SPREAD__; // p75-minus-median gap of this season's purchases: how much further a genuinely contested listing goes, on top of its position's median
+const BID_MODEL = __BID_MODEL__; // {a,b,hi,n,src}: ajuste sobre las subastas reales recientes (update.py: calibrate_bid_model)
 const NEXT_ROUND_KICKOFF = __NEXT_ROUND_KICKOFF__; // unix seconds of the first match of the next jornada across LaLiga, or null
 
 const POS_LABEL = {1:'POR',2:'DEF',3:'CEN',4:'DEL',5:'ENT'};
@@ -536,10 +536,10 @@ const normalize = s => (s||'').toString().trim().toLowerCase()
   .normalize('NFD').replace(/[̀-ͯ]/g,'');
 
 const data = PLAYERS.map(p=>{
-  const [id,name,team,pos,price,inc,ptsLS,status,nextDiff,role,injuryTxt,injuryDays,injuryGrav,injuryStatusTxt,injuryProb,leagueFree,leagueForSale,salePrice,saleSeller,saleUntil,pts,fitness,cuatroRating,cuatroComment,cuatroUrl]=p;
+  const [id,name,team,pos,price,inc,ptsLS,status,nextDiff,role,injuryTxt,injuryDays,injuryGrav,injuryStatusTxt,injuryProb,leagueFree,leagueForSale,salePrice,saleSeller,saleUntil,pts,fitness,cuatroRating,cuatroComment,cuatroUrl,played]=p;
   const value = (ptsLS!=null && ptsLS>0 && price>0) ? ptsLS/(price/1e6) : null;
-  return {id,name,team,pos,price,inc,ptsLS,status,nextDiff,value,role,injuryTxt,injuryDays,injuryGrav,injuryStatusTxt,injuryProb,leagueFree,leagueForSale,salePrice,saleSeller,saleUntil,pts,fitness,cuatroRating,cuatroComment,cuatroUrl,
-    nameNorm: normalize(name), teamNorm: normalize(team)};
+  return {id,name,team,pos,price,inc,ptsLS,status,nextDiff,value,role,injuryTxt,injuryDays,injuryGrav,injuryStatusTxt,injuryProb,leagueFree,leagueForSale,salePrice,saleSeller,saleUntil,pts,fitness,cuatroRating,cuatroComment,cuatroUrl,played:played||0,
+    positions:(POS_ALT[id]||[pos]), nameNorm: normalize(name), teamNorm: normalize(team)};
 });
 const dataById = new Map(data.map(d=>[d.id,d]));
 const HAS_LEAGUE_MARKET = data.some(d=>d.leagueFree || d.leagueForSale);
@@ -824,135 +824,32 @@ function roleProb01(d){
   return roleFrac*0.5 + probFrac*0.5;
 }
 
-// Cuánto por encima de la mediana de su posición se paga depende de lo
-// disputado que esté ESE jugador (rol + titularidad), pero nunca más de
-// BID_SPREAD: ese es el margen que de verdad separa "fichaje típico" de
-// "fichaje muy disputado" esta temporada, así que ningún jugador -por bueno
-// que sea- puede acabar sugiriendo más que eso.
-// Que un jugador sea "Clave" no sirve de nada si ahora mismo nadie en la
-// liga puede permitirse pelear por él: al principio de temporada casi todos
-// tienen el banco lleno pero 0-3 jugadores, y ese dinero está en realidad
-// comprometido para completar el mínimo de 11 (y a poder ser más), no libre
-// para volcarlo en un solo fichaje. Para cada rival estimamos cuánto le
-// tocaría de media por cada hueco que le queda por cubrir en la plantilla
-// (banco + pendiente de venta, repartido entre los fichajes que aún necesita
-// para llegar a una plantilla completa) - ese es su presupuesto "de sobra"
-// realista para UN jugador, no todo lo que tiene en el banco.
+// Puja probable en una subasta de la máquina. Patrón medido sobre las
+// subastas reales de esta liga: lo que de verdad manda es cuánto ha subido el
+// precio del jugador el día que sale al mercado (+2% ≈ 1,16x su VM; plano ≈
+// 1,05x; si cae, se lleva casi por el mínimo). Posición, franja de precio,
+// puntos y rol no añadían nada una vez conocido eso, y la mediana de toda la
+// temporada (1,15x) se quedaba siempre por encima de lo pagado porque el
+// mercado se ha enfriado desde el verano. El ajuste se recalcula cada día con
+// las últimas 6 semanas (a/b/hi vienen de BID_MODEL).
 const TARGET_SQUAD = 18; // máximo de jugadores por plantilla en esta liga
-const RIVALS_BUDGET = RIVALS.map(r=>{
-  const [id,name,balance,pending,rosterValue,por,def,cen,del,ent,squadSize] = r;
-  const stillNeeded = Math.max(1, TARGET_SQUAD - squadSize);
-  return (balance + pending) / stillNeeded;
-});
-
-function competitionFactor(d){
-  if(!RIVALS_BUDGET.length) return 1; // sin datos de liga, no penalizamos
-  // "Capaz de pelear" = su reparto medio por hueco ya cubre el precio del
-  // jugador (con margen); por debajo de eso tendría que desviar dinero de
-  // otros fichajes que todavía necesita, algo que la mayoría no hace salvo
-  // por 1-2 objetivos muy concretos.
-  const capable = RIVALS_BUDGET.filter(b => b >= d.price * 0.6).length;
-  return clamp01(capable / 3); // con 3+ rivales capaces, se aplica el margen completo
+function priceMomentum1(d){
+  const prev = d.price - (d.inc||0);
+  return prev>0 ? (d.inc||0)/prev : 0;
 }
-
-// Cómo se mueve el precio HOY es la señal más directa de si hay pelea real
-// por él ahora mismo - más fiable que estimar a partir de rol/titularidad,
-// porque es lo que los propios managers ya están haciendo con su dinero. Si
-// el precio baja, a nadie le interesa lo bastante como para pujar por
-// encima de él (se anula casi toda la prima: se espera ganarlo sin
-// competencia, al precio pedido). Si sube con fuerza, hay compradores
-// activos ahora mismo, y encima saben que recuperarán la subida en un par
-// de días, así que refuerza la prima por encima de lo que ya da el resto
-// del modelo. Los umbrales de corte son una estimación razonable, no una
-// calibración con datos (no tenemos un histórico de "cuántas pujas recibió
-// cada fichaje según cómo se estaba moviendo su precio ese día").
-function momentumFactor(d){
-  const pct = d.price>0 ? d.inc/d.price : 0;
-  if(pct <= -0.005) return 0; // bajando con claridad -> sin prima
-  if(pct < 0) return clamp01(1 + pct*200); // rampa suave entre 0% y -0.5%
-  return 1 + Math.min(pct*20, 0.6); // subiendo -> refuerzo, tope +60%
-}
-
-// Cuánto se paga de más NO es lo mismo para un jugador de 500k que uno de
-// 20M - con los fichajes reales de esta temporada agrupados por franja de
-// precio (dentro de cada posición por separado, para no confundir "caro"
-// con "delantero"), el sobreprecio mediano baja con claridad al subir de
-// franja: ~1.13x por debajo de 5M, ~1.06x entre 5-15M, ~1.05x por encima de
-// 15M. Interpolado en escala logarítmica de precio y normalizado contra la
-// franja 1-5M (la más numerosa, y donde ya está centrado BID_MEDIAN_BY_POS)
-// para no contar dos veces el efecto de posición/mediana.
-const PRICE_TIER_POINTS = [
-  [Math.log10(300000), 1.135],
-  [Math.log10(3000000), 1.127],
-  [Math.log10(10000000), 1.059],
-  [Math.log10(20000000), 1.045],
-];
-const PRICE_TIER_REF = 1.127; // mediana real de la franja 1-5M€, la de referencia
-function priceTierFactor(price){
-  if(!(price>0)) return 1;
-  const x = Math.log10(price);
-  const pts = PRICE_TIER_POINTS;
-  if(x<=pts[0][0]) return pts[0][1]/PRICE_TIER_REF;
-  if(x>=pts[pts.length-1][0]) return pts[pts.length-1][1]/PRICE_TIER_REF;
-  for(let i=0;i<pts.length-1;i++){
-    const [x0,y0]=pts[i], [x1,y1]=pts[i+1];
-    if(x>=x0 && x<=x1){
-      const t=(x-x0)/(x1-x0);
-      return (y0+(y1-y0)*t)/PRICE_TIER_REF;
-    }
-  }
-  return 1;
-}
-
-// Cuánto falta para el primer partido de la próxima jornada también deja un
-// patrón real en lo que se paga, aunque más suave que el de precio: mediana
-// ~1.10x con la jornada a 0-2 días vista, ~1.11-1.12x a 2-7 días, ~1.16x con
-// una semana o más por delante. Contraintuitivo (uno esperaría más urgencia
-// cerca del pitido) pero es lo que dicen los datos, así que se usa tal cual
-// - normalizado igual que arriba contra la franja de referencia 1-5M€.
-const ROUND_TIMING_POINTS = [
-  [0, 1.101], [1.5, 1.098], [3, 1.113], [5.5, 1.122], [7, 1.160],
-];
-function daysToNextRound(){
-  if(NEXT_ROUND_KICKOFF==null) return null;
-  return (NEXT_ROUND_KICKOFF*1000 - Date.now()) / 86400000;
-}
-function roundTimingFactor(){
-  const days = daysToNextRound();
-  if(days==null || days<0) return 1; // sin fecha, o la jornada ya ha empezado - no se penaliza ni se prima
-  const pts = ROUND_TIMING_POINTS;
-  if(days<=pts[0][0]) return pts[0][1]/PRICE_TIER_REF;
-  if(days>=pts[pts.length-1][0]) return pts[pts.length-1][1]/PRICE_TIER_REF;
-  for(let i=0;i<pts.length-1;i++){
-    const [x0,y0]=pts[i], [x1,y1]=pts[i+1];
-    if(days>=x0 && days<=x1){
-      const t=(days-x0)/(x1-x0);
-      return (y0+(y1-y0)*t)/PRICE_TIER_REF;
-    }
-  }
-  return 1;
-}
-
 function demandRatio(d){
-  const posMedian = BID_MEDIAN_BY_POS[d.pos] ?? BID_MEDIAN_BY_POS[3] ?? 1.10;
-  // Toda la prima sobre el precio -tanto la típica de su posición como el
-  // extra por rol/titularidad/competencia real- se escala por el momentum:
-  // un jugador cuyo precio cae no se libra de perder también la prima
-  // "de base" solo porque su posición suele venderse algo por encima de
-  // valor en general. La franja de precio y la cercanía de la próxima
-  // jornada ajustan esa misma prima un poco más, en la dirección que de
-  // verdad marcan los fichajes reales de esta temporada.
-  const structuralPremium = (posMedian - 1) + roleProb01(d) * BID_SPREAD * competitionFactor(d);
-  const timing = priceTierFactor(d.price) * roundTimingFactor();
-  return 1 + structuralPremium * momentumFactor(d) * timing;
+  const x = Math.max(-0.03, Math.min(0.05, priceMomentum1(d))) * 20;
+  return Math.max(1, 1 + BID_MODEL.a + BID_MODEL.b * x);
 }
+// "Para asegurar": el percentil 80 de lo que se ha acabado pagando en casos así.
+function demandRatioHigh(d){ return demandRatio(d) + BID_MODEL.hi; }
 // Fusionado dentro de "Todos los jugadores": estos campos se calculan para
 // todo jugador disponible en el mercado de tu liga (el resto se quedan a
 // null) y se muestran como columnas extra cuando activas ese filtro.
 function augmentMarketFields(){
   data.forEach(d=>{
     if(!(d.leagueFree || d.leagueForSale)){
-      d.askPrice = d.suggested = d.seller = d.score = null;
+      d.askPrice = d.suggested = d.suggestedHigh = d.seller = d.score = null;
       return;
     }
     const askPrice = d.salePrice!=null ? d.salePrice : d.price;
@@ -962,9 +859,10 @@ function augmentMarketFields(){
     // ajustado (dentro de un margen acotado por lo que realmente separa un
     // fichaje típico de uno muy disputado) según lo titular/importante que
     // es este jugador en concreto.
-    const base = d.price * demandRatio(d); // ya incluye el efecto de la subida/bajada de hoy (ver momentumFactor)
+    const base = d.price * demandRatio(d); // ya incluye la subida/bajada de hoy
     d.askPrice = askPrice;
     d.suggested = Math.max(Math.round(base / 1000) * 1000, askPrice);
+    d.suggestedHigh = Math.max(Math.round(d.price * demandRatioHigh(d) / 1000) * 1000, d.suggested);
     d.seller = d.leagueForSale ? (d.saleSeller||'?') : 'Máquina';
     d.score = pickScore(d);
   });
@@ -1427,28 +1325,94 @@ function priceMomentumFrac(d){
   return percentileOf(d.pos, pct, x=> x.price>0 ? x.inc/x.price : null);
 }
 
-// Cinco factores, ninguno decide él solo quién entra en el once:
-// titularidad+rol (ya usado en la puja sugerida), precio de mercado, puntos
-// conseguidos en total, forma de las últimas jornadas y movimiento de precio
-// de hoy - pesos según cuánto pediste que influyera cada uno.
+// Con ya varias jornadas jugadas, lo que más pesa es lo que el jugador ha
+// hecho ESTA temporada, medido por partido (no en total, que castiga al que
+// se ha perdido jornadas por lesión y ya queda recogido en titularidad/rol).
+// Con pocos partidos se acerca a la media de su posición para que un 12 en un
+// solo partido no valga más que una temporada regular.
+const PPG_PRIOR_K = 3;
+const POS_MEAN_PPG = {};
+[1,2,3,4].forEach(pos=>{
+  const grp = data.filter(x=>x.pos===pos && x.played>0);
+  const games = grp.reduce((s,x)=>s+x.played,0);
+  POS_MEAN_PPG[pos] = games ? grp.reduce((s,x)=>s+(x.pts||0),0)/games : 0;
+});
+function ppgShrunk(d){
+  const n = d.played||0;
+  return ((d.pts||0) + PPG_PRIOR_K*(POS_MEAN_PPG[d.pos]||0)) / (n + PPG_PRIOR_K);
+}
+function seasonPpgFrac(d){
+  if(!(d.played>0)) return 0.3; // sin partidos esta temporada: ligeramente por debajo de la media
+  return percentileOf(d.pos, ppgShrunk(d), x=> x.played>0 ? ppgShrunk(x) : null);
+}
+
+// Seis factores, ninguno decide él solo quién entra en el once: puntos por
+// partido de esta temporada, puntos totales (disponibilidad), titularidad+rol,
+// forma de las últimas jornadas, precio de mercado (lo que valora el resto) y
+// movimiento de precio de hoy.
 function xiScore(d){
   return clamp01(
-    roleProb01(d) * 0.30 +
-    percentileOf(d.pos, d.price, x=>x.price) * 0.20 +
-    globalPointsFrac(d) * 0.25 +
-    recentFormFrac(d) * 0.15 +
-    priceMomentumFrac(d) * 0.10
+    seasonPpgFrac(d) * 0.28 +
+    percentileOf(d.pos, d.pts, x=>x.pts) * 0.12 +
+    roleProb01(d) * 0.25 +
+    recentFormFrac(d) * 0.18 +
+    percentileOf(d.pos, d.price, x=>x.price) * 0.12 +
+    priceMomentumFrac(d) * 0.05
   );
 }
 data.forEach(d=>{ d.xiScore = xiScore(d); });
 
+// Reparte a los jugadores de campo entre defensas, centrocampistas y
+// delanteros de una formación respetando que algunos son multiposición
+// (p.ej. DEF/MC). Los managers los colocan lo más atrás que la formación
+// permita, porque un gol de un defensa o un medio puntúa más que el de un
+// delantero: a igualdad de calidad, se prefiere el hueco más retrasado.
+// Programación dinámica sobre (defensas, medios, delanteros) ya ocupados;
+// cada hueco cubierto vale +1000 para que cubrir huecos mande sobre la
+// calidad (una plantilla incompleta rellena todo lo que pueda).
+function eligiblePos(d){ return (d.positions||[d.pos]).filter(p=>p>=2 && p<=4); }
+const XI_D=6, XI_C=7, XI_W=6;
+const xiIdx = (d,c,w)=>(d*XI_C+c)*XI_W+w;
+function xiGrid(outfield, track){
+  let cur = new Array(XI_D*XI_C*XI_W).fill(null);
+  cur[xiIdx(0,0,0)] = {v:0, picks: track?[]:null};
+  for(const pl of outfield){
+    const el = eligiblePos(pl);
+    if(!el.length) continue;
+    const nxt = cur.slice();
+    for(let d=0;d<XI_D;d++) for(let c=0;c<XI_C;c++) for(let w=0;w<XI_W;w++){
+      const st = cur[xiIdx(d,c,w)];
+      if(!st) continue;
+      for(const p of el){
+        let nd=d, nc=c, nw=w;
+        if(p===2){ if(d+1>=XI_D) continue; nd++; }
+        else if(p===3){ if(c+1>=XI_C) continue; nc++; }
+        else { if(w+1>=XI_W) continue; nw++; }
+        const v = st.v + 1000 + (pl.xiScore||0) + (5-p)*1e-6;
+        const k = xiIdx(nd,nc,nw);
+        if(!nxt[k] || v>nxt[k].v) nxt[k] = {v, picks: track ? st.picks.concat([[pl,p]]) : null};
+      }
+    }
+    cur = nxt;
+  }
+  return cur;
+}
+// Mejor reparto para una formación (con huecos si la plantilla no llega).
+function xiBestFor(cur, f){
+  let bs = null;
+  for(let d=0;d<=f.def;d++) for(let c=0;c<=f.cen;c++) for(let w=0;w<=f.del;w++){
+    const st = cur[xiIdx(d,c,w)];
+    if(st && st.v>0 && (!bs || st.v>bs.v)) bs = st;
+  }
+  return bs;
+}
+
 function buildTeamXI(uid){
   const roster = (ROSTERS[uid]||[]).map(pid=>dataById.get(pid)).filter(Boolean);
-  const byPos = {1:[],2:[],3:[],4:[]};
-  roster.forEach(d=>{ if(byPos[d.pos]) byPos[d.pos].push(d); });
-  if(!byPos[1].length) return null; // sin portero en la plantilla, no evaluamos este equipo
-  [1,2,3,4].forEach(p=> byPos[p].sort((a,b)=>b.xiScore-a.xiScore));
-  const gk = byPos[1][0];
+  const gks = roster.filter(d=>d.pos===1).sort((a,b)=>b.xiScore-a.xiScore);
+  if(!gks.length) return null; // sin portero en la plantilla, no evaluamos este equipo
+  const gk = gks[0];
+  const cur = xiGrid(roster.filter(d=>d.pos!==1 && d.pos!==5), true);
   let best = null;
   FORMATIONS.forEach(f=>{
     // Principio de temporada: muchas plantillas todavía no llegan a los 18
@@ -1457,13 +1421,12 @@ function buildTeamXI(uid){
     // los que de verdad hay y se apunta cuántos huecos quedan sin cubrir -
     // así toda plantilla con al menos un portero y un jugador de campo
     // consigue un resultado, y se prioriza la formación con menos huecos.
-    const nDef = Math.min(f.def, byPos[2].length);
-    const nCen = Math.min(f.cen, byPos[3].length);
-    const nDel = Math.min(f.del, byPos[4].length);
-    if(nDef+nCen+nDel===0) return;
-    const chosen = [gk, ...byPos[2].slice(0,nDef), ...byPos[3].slice(0,nCen), ...byPos[4].slice(0,nDel)];
+    const bs = xiBestFor(cur, f);
+    if(!bs) return;
+    const filled = bs.picks.length;
+    const chosen = [{...gk, slotPos:1}, ...bs.picks.map(([pl,p])=>({...pl, slotPos:p}))];
     const ratio = chosen.reduce((s,d)=>s+d.xiScore,0) / chosen.length;
-    const gaps = (f.def-nDef) + (f.cen-nCen) + (f.del-nDel);
+    const gaps = (f.def+f.cen+f.del) - filled;
     if(!best || gaps<best.gaps || (gaps===best.gaps && ratio>best.ratio)){
       best = {formation:f, chosen, ratio, gaps};
     }
@@ -1473,7 +1436,7 @@ function buildTeamXI(uid){
 
 function teamDescription(result){
   const byPos = {2:[],3:[],4:[]};
-  result.chosen.forEach(d=>{ if(byPos[d.pos]) byPos[d.pos].push(d); });
+  result.chosen.forEach(d=>{ const sp=d.slotPos||d.pos; if(byPos[sp]) byPos[sp].push(d); });
   const lines = [2,3,4].filter(p=>byPos[p].length).map(pos=>({
     pos, avg: byPos[pos].reduce((s,d)=>s+d.xiScore,0)/byPos[pos].length,
   }));
@@ -1521,14 +1484,14 @@ function buildTeamXIModal(uid){
   if(!entry) return '';
   const groups = [1,2,3,4].map(pos=>({
     pos, label: POS_NAME[pos],
-    list: entry.result.chosen.filter(d=>d.pos===pos),
+    list: entry.result.chosen.filter(d=>(d.slotPos||d.pos)===pos),
   })).filter(g=>g.list.length);
   const body = groups.map(g=>`
     <div class="team-xi-group">
       <h3>${g.label} <span class="roster-group-count">${g.list.length}</span></h3>
       ${g.list.map(d=>`
         <div class="team-xi-row">
-          <span class="${d.team==='Libre'?'player-teamless':''}">${d.name} <small>(${d.team})</small>${d.role?` · ${d.role}`:''}</span>
+          <span class="${d.team==='Libre'?'player-teamless':''}">${d.name} <small>(${d.team})</small>${d.role?` · ${d.role}`:''}${(d.positions||[]).length>1?` · <small title="Multiposición: se coloca lo más atrás que permite la formación">${d.positions.map(q=>POS_LABEL[q]).join('/')}</small>`:''}</span>
           <span class="team-xi-score">${(d.xiScore*100).toFixed(0)}</span>
         </div>`).join('')}
     </div>`).join('');
@@ -1711,7 +1674,7 @@ function renderTable(){
     const cuatroHtml = d.cuatroRating==null ? '—' : `<button class="cuatro-rating-btn ${cuatroTierClass(d.cuatroRating)}" data-pid="${d.id}" title="Ver el comentario de Cuatro Picas">${d.cuatroRating}%</button>`;
     const marketCells = !showMarketCols ? '' : `
       <td class="tab">${askPriceHtml}</td>
-      <td class="tab" style="color:var(--accent);font-weight:700">${d.suggested==null?'—':euros(d.suggested)}</td>
+      <td class="tab" style="color:var(--accent);font-weight:700" title="${d.suggested==null?'':`Puja probable (mediana de lo pagado en casos así). Para asegurar: ${euros(d.suggestedHigh)}`}">${d.suggested==null?'—':euros(d.suggested)}</td>
       <td class="pteam">${d.seller||'—'}</td>
       <td class="tab">${d.score==null?'—':d.score.toFixed(0)}</td>
       <td class="pteam">${d.recommendedFor||'—'}</td>
@@ -1754,16 +1717,17 @@ const cpAvail = p => p.status!=='injured';
 const cpSellPrice = p => p.price;
 
 function cpBestXI(players){
-  const by = {1:[],2:[],3:[],4:[]};
-  players.filter(cpAvail).forEach(p=>{ if(by[p.pos]) by[p.pos].push(p.xiScore||0); });
-  Object.values(by).forEach(a=>a.sort((x,y)=>y-x));
-  if(!by[1].length) return null;
-  const sum = (a,n)=> a.slice(0,n).reduce((s,v)=>s+v,0);
+  const av = players.filter(cpAvail);
+  const gks = av.filter(p=>p.pos===1);
+  if(!gks.length) return null;
+  const gk = Math.max(...gks.map(p=>p.xiScore||0));
+  const cur = xiGrid(av.filter(p=>p.pos!==1 && p.pos!==5), false);
   let best = null;
   FORMATIONS.forEach(f=>{
-    if(by[2].length<f.def || by[3].length<f.cen || by[4].length<f.del) return;
-    const s = by[1][0] + sum(by[2],f.def) + sum(by[3],f.cen) + sum(by[4],f.del);
-    if(best==null || s>best) best = s;
+    const st = cur[xiIdx(f.def,f.cen,f.del)];
+    if(!st) return; // formación completa, sin huecos
+    const sum = gk + (st.v - 1000*(f.def+f.cen+f.del));
+    if(best==null || sum>best) best = sum;
   });
   return best; // null = no puede formar un once legal
 }
@@ -1870,15 +1834,15 @@ let cpSelectedId = null;
 function cpSalesList(sales){
   return `<ul class="cp-list">${sales.map(s=>`<li>${cpEsc(s.p.name)} <span class="tab">(${cpPosShort(s.p.pos)} · VM ${eurosShort(s.price)}${s.kind==='extra'?' · no está en venta':''})</span>${vmDeltaHtml(s.p)}</li>`).join('')}</ul>`;
 }
-function cpCashLine(balance, sales, need){
+function cpCashLine(balance, sales, need, high){
   const vm = sales.reduce((s,x)=>s+x.price,0);
   const total = balance + vm, plus = balance + vm*1.05;
-  return `<div class="cp-impl">Reuniría <b>${eurosShort(total)}</b> <span class="tab">(${eurosShort(plus)} con +5%)</span> = banco ${eurosShort(balance)} + ${eurosShort(vm)} de VM vendido · puja probable ${eurosShort(need)} → ${total>=need?'sobran':'faltan'} <b>${eurosShort(Math.abs(total-need))}</b>.</div>`;
+  return `<div class="cp-impl">Reuniría <b>${eurosShort(total)}</b> <span class="tab">(${eurosShort(plus)} con +5%)</span> = banco ${eurosShort(balance)} + ${eurosShort(vm)} de VM vendido · puja probable ${eurosShort(need)} → ${total>=need?'sobran':'faltan'} <b>${eurosShort(Math.abs(total-need))}</b>${high!=null?` · para asegurar (${eurosShort(high)}) ${total>=high?'también llega':'no llega'}`:''}.</div>`;
 }
-function cpImplHtml(impl, sales, label, balance, need){
+function cpImplHtml(impl, sales, label, balance, need, high){
   const delta = impl.delta==null ? '' :
     ` · mejor once: <b class="${impl.delta>=0.02?'cp-ok':(impl.delta<=-0.02?'cp-no':'')}">${impl.delta>=0?'+':''}${impl.delta.toFixed(2)}</b>`;
-  return `${sales.length ? cpSalesList(sales) + cpCashLine(balance, sales, need) : ''}
+  return `${sales.length ? cpSalesList(sales) + cpCashLine(balance, sales, need, high) : ''}
     <div class="cp-impl">Tras la operación: <b>${impl.size}</b> jugadores${delta} · dificultad <span class="cp-chip ${impl.cls}">${impl.level}</span>
     ${impl.notes.length ? '<br>⚠ '+impl.notes.map(cpEsc).join('; ')+'.' : ''}</div>
     <div class="cp-opinion">${cpEsc(impl.verdict)}</div>`;
@@ -1906,7 +1870,7 @@ function drawCompraPotencial(){
   const n = k => plans.filter(p=>p.best===k).length;
   document.getElementById('cpTarget').innerHTML =
     `<b>${cpEsc(target.name)}</b> · ${cpEsc(target.team)} · ${POS_NAME[target.pos]} · valor ${eurosShort(target.price)} (${target.inc>=0?'+':''}${eurosShort(target.inc)} hoy)<br>
-     Mínimo pedido <b>${eurosShort(target.askPrice)}</b> · puja probable para ganar <b>${eurosShort(need)}</b> · cierra ${until}
+     Mínimo pedido <b>${eurosShort(target.askPrice)}</b> · puja probable <b>${eurosShort(need)}</b> · para asegurar <b>${eurosShort(target.suggestedHigh)}</b> · cierra ${until}
      <div class="cp-summary">${n(0)} manager(s) podrían pagarlo solo con el banco · ${n(1)} más vendiendo lo que ya tienen en venta · ${n(2)} más vendiendo además jugadores que hoy no están en venta · ${n(3)} no llegan ni así.</div>`;
 
   document.getElementById('cpGrid').innerHTML = plans.map(pl=>{
@@ -1917,7 +1881,7 @@ function drawCompraPotencial(){
     if(pl.bank.ok){
       route.push(`<div class="cp-route"><div class="cp-route-title cp-ok">✔ Solo con el banco</div>
         <div class="cp-impl">Le sobran ${eurosShort(pl.balance-need)} tras pujar ${eurosShort(need)}.</div>
-        ${cpImplHtml(pl.bank.impl, [], '', pl.balance, need)}</div>`);
+        ${cpImplHtml(pl.bank.impl, [], '', pl.balance, need, target.suggestedHigh)}</div>`);
     } else {
       const why = pl.full ? `plantilla llena (${TARGET_SQUAD}): tendría que vender a alguien antes de fichar` :
         (pl.bank.canMin ? `llega al mínimo (${eurosShort(target.askPrice)}) pero no a la puja probable: le faltan ${eurosShort(pl.bank.shortfall)}` :
@@ -1930,7 +1894,7 @@ function drawCompraPotencial(){
         route.push(`<div class="cp-route"><div class="cp-route-title cp-no">✖ Vendiendo lo que tiene en venta</div><div class="cp-impl">No tiene ningún jugador en venta ahora mismo.</div></div>`);
       } else if(pl.listedRoute && pl.listedRoute.ok){
         route.push(`<div class="cp-route"><div class="cp-route-title cp-ok">✔ Vendiendo lo que ya tiene en venta (${pl.listedRoute.sales.length} de ${pl.listed.length})</div>
-          ${cpImplHtml(pl.listedRoute.impl, pl.listedRoute.sales, '', pl.balance, need)}
+          ${cpImplHtml(pl.listedRoute.impl, pl.listedRoute.sales, '', pl.balance, need, target.suggestedHigh)}
           <div class="cp-impl">Contado a VM; la máquina ofrece ±5% una vez al día (7:00) y, si otro manager compra, se cobra el precio pedido.</div></div>`);
       } else {
         const cash = pl.listedRoute.cash;
@@ -1942,7 +1906,7 @@ function drawCompraPotencial(){
     if(pl.extraRoute){
       if(pl.extraRoute.ok){
         route.push(`<div class="cp-route"><div class="cp-route-title cp-warn">➕ Vendiendo además jugadores que no están en venta</div>
-          ${cpImplHtml(pl.extraRoute.impl, pl.extraRoute.sales, '', pl.balance, need)}</div>`);
+          ${cpImplHtml(pl.extraRoute.impl, pl.extraRoute.sales, '', pl.balance, need, target.suggestedHigh)}</div>`);
       } else {
         route.push(`<div class="cp-route"><div class="cp-route-title cp-no">✖ Ni vendiendo jugadores de la plantilla</div>
           <div class="cp-impl">Con todo lo vendible aún le faltarían ${eurosShort(pl.extraRoute.shortfall)} (o se quedaría sin once legal).</div></div>`);
