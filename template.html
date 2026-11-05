@@ -1460,9 +1460,17 @@ function buildTeamXI(uid){
     const chosen = [{...gk, slotPos:1}, ...bs.picks.map(([pl,p])=>({...pl, slotPos:p}))];
     const ratio = chosen.reduce((s,d)=>s+d.xiScore,0) / chosen.length;
     const gaps = (f.def+f.cen+f.del) - filled;
-    if(!best || gaps<best.gaps || (gaps===best.gaps && ratio>best.ratio)){
-      best = {formation:f, chosen, ratio, gaps};
-    }
+    // Prioridad de los managers con los multiposición: defensas, luego medios,
+    // luego delanteros. Cada multiposición suma más cuanto más atrás juega
+    // (DEF 3, MC 2, DEL 1). Si dos formaciones sacan casi la misma calidad,
+    // gana la que los deja más atrás (p.ej. 5-2-3 antes que 3-4-3 si Revivo y
+    // Novoa son DEF/MC y hay sitio para ellos en la zaga).
+    const rear = chosen.reduce((s,d)=>s + ((d.positions||[]).length>1 ? 5-d.slotPos : 0), 0);
+    const TIE = 0.003;
+    const better = !best || gaps<best.gaps ||
+      (gaps===best.gaps && (ratio > best.ratio + TIE ||
+        (Math.abs(ratio-best.ratio) <= TIE && (rear>best.rear || (rear===best.rear && ratio>best.ratio)))));
+    if(better) best = {formation:f, chosen, ratio, gaps, rear};
   });
   return best;
 }
